@@ -1,0 +1,536 @@
+name: Security Scan (reusable)
+
+# Reusable security-scan workflow for the simple-container-com org.
+#
+# Designed for use in PUBLIC consumer repos that may receive PRs from forks.
+# This workflow runs untrusted PR code only as inert input to scanners
+# (TruffleHog, Syft, Trivy, Grype) — it never builds, installs, or executes it.
+# It runs under `pull_request` (not `pull_request_target`) so fork PRs receive
+# a read-only token and no access to org secrets.
+#
+# Comment posting is deliberately split into security-scan-comment.yml,
+# triggered via workflow_run, so privileged token use never touches PR code.
+
+on:
+  workflow_call:
+    inputs:
+      product-name:
+        description: 'Product name for reporting. Defaults to calling repository name.'
+        required: false
+        default: ''
+        type: string
+      fail-on-secrets:
+        description: 'Fail the workflow if secrets are detected by TruffleHog'
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: security-scan-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ================================================================
+  # JOB 1: SECRET SCAN (TruffleHog)
+  # ================================================================
+  secret-scan:
+    name: Secret Scan (TruffleHog)
+    runs-on: ubuntu-24.04
+    outputs:
+      findings-count: ${{ steps.scan.outputs.findings-count }}
+      has-findings: ${{ steps.scan.outputs.has-findings }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run TruffleHog secret scan
+        id: scan
+        run: |
+          set -u
+          echo "Running TruffleHog secret scan..."
+
+          mkdir -p "$RUNNER_TEMP/trufflehog"
+          JSON_FILE="$RUNNER_TEMP/trufflehog/results.json"
+          SCAN_ROOT="$RUNNER_TEMP/trufflehog/repo"
+
+          mkdir -p "$SCAN_ROOT"
+          # git archive emits only tracked content at HEAD — no runner artifacts
+          git archive HEAD | tar -x -C "$SCAN_ROOT"
+
+          # Exclude SC encrypted secrets — managed by Simple Container, not leaks
+          EXCLUDE_FILE="$RUNNER_TEMP/trufflehog/exclude-paths.txt"
+          {
+            echo ".sc/secrets.yaml"
+            echo ".sc/stacks/*/secrets.yaml"
+          } > "$EXCLUDE_FILE"
+
+          docker run --rm \
+            -v "$SCAN_ROOT:/repo:ro" \
+            -v "$EXCLUDE_FILE:/exclude-paths.txt:ro" \
+            ghcr.io/trufflesecurity/trufflehog:3.92.4 \
+            filesystem /repo \
+            --json \
+            --no-update \
+            --exclude-paths=/exclude-paths.txt \
+            2>/dev/null | tee "$JSON_FILE" || true
+
+          FINDINGS_COUNT=$(jq -s 'length' "$JSON_FILE" 2>/dev/null || echo "0")
+          echo "findings-count=$FINDINGS_COUNT" >> "$GITHUB_OUTPUT"
+
+          if [ "$FINDINGS_COUNT" -gt 0 ]; then
+            echo "has-findings=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has-findings=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "TruffleHog scan completed. Found $FINDINGS_COUNT potential secret(s)."
+
+      - name: Add step summary
+        env:
+          FINDINGS_COUNT: ${{ steps.scan.outputs.findings-count }}
+        run: |
+          {
+            echo "## Secret Scanning Results (TruffleHog)"
+            echo ""
+            if [ "$FINDINGS_COUNT" -eq 0 ]; then
+              echo "**Status:** No secrets detected"
+            else
+              echo "**Status:** $FINDINGS_COUNT potential secret(s) detected"
+              echo ""
+              echo "<details><summary>View Findings</summary>"
+              echo ""
+              echo '```'
+              jq -r '.DetectorName + " in " + .SourceMetadata.Data.Filesystem.file' \
+                "$RUNNER_TEMP/trufflehog/results.json" 2>/dev/null \
+                || echo "See artifacts for details"
+              echo '```'
+              echo "</details>"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload TruffleHog results
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
+        with:
+          name: trufflehog-results
+          path: ${{ runner.temp }}/trufflehog/results.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ================================================================
+  # JOB 2: SBOM GENERATION + DEPENDENCY SCANNING (Syft + Trivy + Grype)
+  # ================================================================
+  sbom-scan:
+    name: SBOM + Dependency Scan
+    runs-on: ubuntu-24.04
+    outputs:
+      component-count: ${{ steps.sbom.outputs.component-count }}
+      trivy-total: ${{ steps.vuln-scan.outputs.trivy-total }}
+      trivy-critical: ${{ steps.vuln-scan.outputs.trivy-critical }}
+      trivy-high: ${{ steps.vuln-scan.outputs.trivy-high }}
+      trivy-medium: ${{ steps.vuln-scan.outputs.trivy-medium }}
+      trivy-low: ${{ steps.vuln-scan.outputs.trivy-low }}
+      trivy-unknown: ${{ steps.vuln-scan.outputs.trivy-unknown }}
+      grype-total: ${{ steps.vuln-scan.outputs.grype-total }}
+      grype-critical: ${{ steps.vuln-scan.outputs.grype-critical }}
+      grype-high: ${{ steps.vuln-scan.outputs.grype-high }}
+      grype-medium: ${{ steps.vuln-scan.outputs.grype-medium }}
+      grype-low: ${{ steps.vuln-scan.outputs.grype-low }}
+      grype-unknown: ${{ steps.vuln-scan.outputs.grype-unknown }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Generate SBOM with Syft
+        id: sbom
+        run: |
+          set -u
+          echo "Generating SBOM with Syft..."
+
+          mkdir -p "$RUNNER_TEMP/sbom"
+          SBOM_FILE="$RUNNER_TEMP/sbom/sbom-cyclonedx.json"
+
+          docker run --rm \
+            -v "${{ github.workspace }}:/repo:ro" \
+            -v "$RUNNER_TEMP/sbom:/output" \
+            ghcr.io/anchore/syft:v1.40.1 \
+            dir:/repo \
+            --exclude '**/.github/**' \
+            -o cyclonedx-json=/output/sbom-cyclonedx.json
+
+          if [ ! -f "$SBOM_FILE" ]; then
+            echo "::error::Failed to generate SBOM"
+            exit 1
+          fi
+
+          COMPONENT_COUNT=$(jq '.components | length' "$SBOM_FILE" 2>/dev/null || echo "0")
+          echo "sbom-file=$SBOM_FILE" >> "$GITHUB_OUTPUT"
+          echo "component-count=$COMPONENT_COUNT" >> "$GITHUB_OUTPUT"
+
+          echo "SBOM generated with $COMPONENT_COUNT components"
+
+          if [ "$COMPONENT_COUNT" = "0" ]; then
+            echo "::warning::SBOM contains 0 components. Repo may have no detectable dependencies."
+          fi
+
+      - name: Vulnerability scan (Trivy + Grype, parallel)
+        id: vuln-scan
+        run: |
+          set -euo pipefail
+
+          SBOM_FILE="${{ steps.sbom.outputs.sbom-file }}"
+          OUTPUT_DIR="$RUNNER_TEMP/vuln-scan"
+          TRIVY_VERSION="0.68.2"
+          GRYPE_VERSION="v0.106.0"
+
+          mkdir -p "$OUTPUT_DIR"
+
+          TRIVY_JSON="$OUTPUT_DIR/trivy-scan.json"
+          GRYPE_JSON="$OUTPUT_DIR/grype-scan.json"
+
+          SBOM_ABS="$(cd "$(dirname "$SBOM_FILE")" && pwd)/$(basename "$SBOM_FILE")"
+
+          # Trivy scan in background (pinned image, no installer)
+          echo "Starting Trivy scan..."
+          (
+            docker run --rm \
+              -v "$SBOM_ABS:/sbom.json:ro" \
+              -v "$OUTPUT_DIR:/output" \
+              "public.ecr.aws/aquasecurity/trivy:$TRIVY_VERSION" \
+              sbom /sbom.json \
+              --severity "UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL" \
+              --format json \
+              --output /output/trivy-scan.json 2>&1 || true
+          ) &
+          TRIVY_PID=$!
+
+          # Grype scan in background (pinned image, no installer)
+          echo "Starting Grype scan..."
+          (
+            docker run --rm \
+              -v "$SBOM_ABS:/sbom.json:ro" \
+              -v "$OUTPUT_DIR:/output" \
+              "ghcr.io/anchore/grype:$GRYPE_VERSION" \
+              "sbom:/sbom.json" \
+              -o json \
+              --file /output/grype-scan.json 2>&1 || true
+          ) &
+          GRYPE_PID=$!
+
+          echo "Waiting for parallel scans to complete..."
+          wait $TRIVY_PID || true
+          wait $GRYPE_PID || true
+
+          # Parse Trivy results
+          TRIVY_TOTAL=0; TRIVY_CRITICAL=0; TRIVY_HIGH=0; TRIVY_MEDIUM=0; TRIVY_LOW=0; TRIVY_UNKNOWN=0
+          if [ -f "$TRIVY_JSON" ] && [ -s "$TRIVY_JSON" ]; then
+            TRIVY_TOTAL=$(jq '[.Results[]?.Vulnerabilities // [] | length] | add // 0' "$TRIVY_JSON" 2>/dev/null || echo "0")
+            TRIVY_CRITICAL=$(jq '[.Results[]?.Vulnerabilities // [] | .[] | select(.Severity == "CRITICAL")] | length' "$TRIVY_JSON" 2>/dev/null || echo "0")
+            TRIVY_HIGH=$(jq '[.Results[]?.Vulnerabilities // [] | .[] | select(.Severity == "HIGH")] | length' "$TRIVY_JSON" 2>/dev/null || echo "0")
+            TRIVY_MEDIUM=$(jq '[.Results[]?.Vulnerabilities // [] | .[] | select(.Severity == "MEDIUM")] | length' "$TRIVY_JSON" 2>/dev/null || echo "0")
+            TRIVY_LOW=$(jq '[.Results[]?.Vulnerabilities // [] | .[] | select(.Severity == "LOW")] | length' "$TRIVY_JSON" 2>/dev/null || echo "0")
+            TRIVY_UNKNOWN=$(jq '[.Results[]?.Vulnerabilities // [] | .[] | select(.Severity == "UNKNOWN")] | length' "$TRIVY_JSON" 2>/dev/null || echo "0")
+            echo "Trivy: $TRIVY_CRITICAL critical, $TRIVY_HIGH high, $TRIVY_MEDIUM medium, $TRIVY_LOW low, $TRIVY_UNKNOWN unknown, $TRIVY_TOTAL total"
+
+            jq -r '
+              [.Results[]?.Vulnerabilities // [] | .[] | select(.Severity == "CRITICAL" or .Severity == "HIGH")]
+              | sort_by(.Severity | if . == "CRITICAL" then 0 else 1 end)
+              | .[] | "| \(.VulnerabilityID) | \(.Severity) | \(.PkgName) | \(.InstalledVersion) | \(.FixedVersion // "n/a") |"
+            ' "$TRIVY_JSON" 2>/dev/null > "$OUTPUT_DIR/trivy-critical-high.txt" || true
+
+            jq -r '
+              [.Results[]?.Vulnerabilities // [] | .[] | select(.Severity == "MEDIUM")]
+              | .[] | "| \(.VulnerabilityID) | \(.PkgName) | \(.InstalledVersion) | \(.FixedVersion // "n/a") |"
+            ' "$TRIVY_JSON" 2>/dev/null > "$OUTPUT_DIR/trivy-medium.txt" || true
+
+            jq -r '
+              [.Results[]?.Vulnerabilities // [] | .[] | select(.Severity == "LOW")]
+              | .[] | "| \(.VulnerabilityID) | \(.PkgName) | \(.InstalledVersion) | \(.FixedVersion // "n/a") |"
+            ' "$TRIVY_JSON" 2>/dev/null > "$OUTPUT_DIR/trivy-low.txt" || true
+          else
+            echo "::warning::Trivy scan produced no output"
+          fi
+
+          # Parse Grype results
+          GRYPE_TOTAL=0; GRYPE_CRITICAL=0; GRYPE_HIGH=0; GRYPE_MEDIUM=0; GRYPE_LOW=0; GRYPE_UNKNOWN=0
+          if [ -f "$GRYPE_JSON" ] && [ -s "$GRYPE_JSON" ]; then
+            GRYPE_TOTAL=$(jq '[.matches[]?] | length' "$GRYPE_JSON" 2>/dev/null || echo "0")
+            GRYPE_CRITICAL=$(jq '[.matches[]? | select(.vulnerability.severity == "Critical")] | length' "$GRYPE_JSON" 2>/dev/null || echo "0")
+            GRYPE_HIGH=$(jq '[.matches[]? | select(.vulnerability.severity == "High")] | length' "$GRYPE_JSON" 2>/dev/null || echo "0")
+            GRYPE_MEDIUM=$(jq '[.matches[]? | select(.vulnerability.severity == "Medium")] | length' "$GRYPE_JSON" 2>/dev/null || echo "0")
+            GRYPE_LOW=$(jq '[.matches[]? | select(.vulnerability.severity == "Low")] | length' "$GRYPE_JSON" 2>/dev/null || echo "0")
+            GRYPE_UNKNOWN=$(jq '[.matches[]? | select(.vulnerability.severity == "Unknown" or .vulnerability.severity == "Negligible")] | length' "$GRYPE_JSON" 2>/dev/null || echo "0")
+            echo "Grype: $GRYPE_CRITICAL critical, $GRYPE_HIGH high, $GRYPE_MEDIUM medium, $GRYPE_LOW low, $GRYPE_UNKNOWN unknown, $GRYPE_TOTAL total"
+
+            jq -r '
+              [.matches[]? | select(.vulnerability.severity == "Critical" or .vulnerability.severity == "High")]
+              | sort_by(.vulnerability.severity | if . == "Critical" then 0 else 1 end)
+              | .[] | "| \(.vulnerability.id) | \(.vulnerability.severity) | \(.artifact.name) | \(.artifact.version) | \(.vulnerability.fix.versions[0] // "n/a") |"
+            ' "$GRYPE_JSON" 2>/dev/null > "$OUTPUT_DIR/grype-critical-high.txt" || true
+
+            jq -r '
+              [.matches[]? | select(.vulnerability.severity == "Medium")]
+              | .[] | "| \(.vulnerability.id) | \(.artifact.name) | \(.artifact.version) | \(.vulnerability.fix.versions[0] // "n/a") |"
+            ' "$GRYPE_JSON" 2>/dev/null > "$OUTPUT_DIR/grype-medium.txt" || true
+
+            jq -r '
+              [.matches[]? | select(.vulnerability.severity == "Low")]
+              | .[] | "| \(.vulnerability.id) | \(.artifact.name) | \(.artifact.version) | \(.vulnerability.fix.versions[0] // "n/a") |"
+            ' "$GRYPE_JSON" 2>/dev/null > "$OUTPUT_DIR/grype-low.txt" || true
+          else
+            echo "::warning::Grype scan produced no output"
+          fi
+
+          {
+            echo "trivy-total=$TRIVY_TOTAL"
+            echo "trivy-critical=$TRIVY_CRITICAL"
+            echo "trivy-high=$TRIVY_HIGH"
+            echo "trivy-medium=$TRIVY_MEDIUM"
+            echo "trivy-low=$TRIVY_LOW"
+            echo "trivy-unknown=$TRIVY_UNKNOWN"
+            echo "grype-total=$GRYPE_TOTAL"
+            echo "grype-critical=$GRYPE_CRITICAL"
+            echo "grype-high=$GRYPE_HIGH"
+            echo "grype-medium=$GRYPE_MEDIUM"
+            echo "grype-low=$GRYPE_LOW"
+            echo "grype-unknown=$GRYPE_UNKNOWN"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Add scan summary
+        env:
+          COMPONENT_COUNT: ${{ steps.sbom.outputs.component-count }}
+          T_CRITICAL: ${{ steps.vuln-scan.outputs.trivy-critical }}
+          T_HIGH: ${{ steps.vuln-scan.outputs.trivy-high }}
+          T_MEDIUM: ${{ steps.vuln-scan.outputs.trivy-medium }}
+          T_LOW: ${{ steps.vuln-scan.outputs.trivy-low }}
+          T_UNKNOWN: ${{ steps.vuln-scan.outputs.trivy-unknown }}
+          T_TOTAL: ${{ steps.vuln-scan.outputs.trivy-total }}
+          G_CRITICAL: ${{ steps.vuln-scan.outputs.grype-critical }}
+          G_HIGH: ${{ steps.vuln-scan.outputs.grype-high }}
+          G_MEDIUM: ${{ steps.vuln-scan.outputs.grype-medium }}
+          G_LOW: ${{ steps.vuln-scan.outputs.grype-low }}
+          G_UNKNOWN: ${{ steps.vuln-scan.outputs.grype-unknown }}
+          G_TOTAL: ${{ steps.vuln-scan.outputs.grype-total }}
+        run: |
+          OUTPUT_DIR="$RUNNER_TEMP/vuln-scan"
+
+          {
+            echo "## SBOM + Vulnerability Scan Results"
+            echo ""
+            echo "**SBOM Components:** $COMPONENT_COUNT"
+            echo ""
+            echo "### Severity Breakdown"
+            echo ""
+            echo "| Scanner | Critical | High | Medium | Low | Unknown | Total |"
+            echo "|---------|----------|------|--------|-----|---------|-------|"
+            echo "| **Trivy** | $T_CRITICAL | $T_HIGH | $T_MEDIUM | $T_LOW | $T_UNKNOWN | $T_TOTAL |"
+            echo "| **Grype** | $G_CRITICAL | $G_HIGH | $G_MEDIUM | $G_LOW | $G_UNKNOWN | $G_TOTAL |"
+            echo ""
+
+            for scanner in trivy grype; do
+              CH_FILE="$OUTPUT_DIR/${scanner}-critical-high.txt"
+              if [ -s "$CH_FILE" ]; then
+                if [ "$scanner" = "trivy" ]; then
+                  echo "### Critical & High Vulnerabilities (Trivy)"
+                else
+                  echo "### Critical & High Vulnerabilities (Grype)"
+                fi
+                echo ""
+                echo "| CVE | Severity | Package | Installed | Fixed |"
+                echo "|-----|----------|---------|-----------|-------|"
+                cat "$CH_FILE"
+                echo ""
+              fi
+            done
+
+            for scanner in trivy grype; do
+              for sev in medium low; do
+                F="$OUTPUT_DIR/${scanner}-${sev}.txt"
+                if [ -s "$F" ]; then
+                  COUNT=$(wc -l < "$F")
+                  SEV_TITLE="${sev^^}"
+                  SCANNER_TITLE="${scanner^}"
+                  echo "<details><summary>$SEV_TITLE Vulnerabilities — $SCANNER_TITLE ($COUNT)</summary>"
+                  echo ""
+                  echo "| CVE | Package | Installed | Fixed |"
+                  echo "|-----|---------|-----------|-------|"
+                  cat "$F"
+                  echo ""
+                  echo "</details>"
+                  echo ""
+                fi
+              done
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
+        with:
+          name: sbom-cyclonedx
+          path: ${{ runner.temp }}/sbom/sbom-cyclonedx.json
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload vulnerability scan results
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
+        with:
+          name: vulnerability-scan-results
+          path: |
+            ${{ runner.temp }}/vuln-scan/trivy-scan.json
+            ${{ runner.temp }}/vuln-scan/grype-scan.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ================================================================
+  # JOB 3: BUILD PR COMMENT BODY (no posting — done by workflow_run)
+  # ================================================================
+  build-comment:
+    name: Build PR Comment Body
+    runs-on: ubuntu-24.04
+    needs: [secret-scan, sbom-scan]
+    if: always() && github.event_name == 'pull_request'
+
+    steps:
+      - name: Generate PR comment body
+        env:
+          PRODUCT_NAME_INPUT: ${{ inputs.product-name }}
+          DEFAULT_PRODUCT_NAME: ${{ github.event.repository.name }}
+          GIT_SHA: ${{ github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SECRET_RESULT: ${{ needs.secret-scan.result }}
+          SECRET_HAS_FINDINGS: ${{ needs.secret-scan.outputs.has-findings }}
+          SECRET_FINDINGS_COUNT: ${{ needs.secret-scan.outputs.findings-count }}
+          SBOM_RESULT: ${{ needs.sbom-scan.result }}
+          SBOM_COMPONENT_COUNT: ${{ needs.sbom-scan.outputs.component-count }}
+          T_CRITICAL: ${{ needs.sbom-scan.outputs.trivy-critical }}
+          T_HIGH: ${{ needs.sbom-scan.outputs.trivy-high }}
+          T_TOTAL: ${{ needs.sbom-scan.outputs.trivy-total }}
+          G_CRITICAL: ${{ needs.sbom-scan.outputs.grype-critical }}
+          G_HIGH: ${{ needs.sbom-scan.outputs.grype-high }}
+          G_TOTAL: ${{ needs.sbom-scan.outputs.grype-total }}
+        run: |
+          set -u
+
+          PRODUCT_NAME="${PRODUCT_NAME_INPUT:-$DEFAULT_PRODUCT_NAME}"
+          # Strip everything except [a-zA-Z0-9._/-] just in case product-name comes
+          # from a less-trusted source in the future
+          PRODUCT_NAME="$(printf '%s' "$PRODUCT_NAME" | tr -cd 'a-zA-Z0-9._/-')"
+          SHORT_SHA="${GIT_SHA::7}"
+
+          mkdir -p "$RUNNER_TEMP/pr-comment"
+          BODY_FILE="$RUNNER_TEMP/pr-comment/body.md"
+          PR_FILE="$RUNNER_TEMP/pr-comment/pr-number.txt"
+
+          echo "$PR_NUMBER" > "$PR_FILE"
+
+          {
+            echo "## Security Scan Results"
+            echo ""
+            echo "**Repository:** \`$PRODUCT_NAME\` | **Commit:** \`$SHORT_SHA\`"
+            echo ""
+            echo "| Check | Status | Details |"
+            echo "|-------|--------|---------|"
+
+            # Secret scan row
+            if [ "$SECRET_RESULT" = "success" ]; then
+              if [ "$SECRET_HAS_FINDINGS" = "true" ]; then
+                echo "| :rotating_light: Secret Scan | **SECRETS FOUND** | ${SECRET_FINDINGS_COUNT} potential secret(s) detected |"
+              else
+                echo "| :white_check_mark: Secret Scan | Pass | No secrets detected |"
+              fi
+            elif [ "$SECRET_RESULT" = "failure" ]; then
+              echo "| :x: Secret Scan | Failed | Check workflow logs |"
+            else
+              echo "| :fast_forward: Secret Scan | Skipped | - |"
+            fi
+
+            # Dependency scan rows
+            if [ "$SBOM_RESULT" = "success" ]; then
+              T_CRITICAL=${T_CRITICAL:-0}; T_HIGH=${T_HIGH:-0}; T_TOTAL=${T_TOTAL:-0}
+              G_CRITICAL=${G_CRITICAL:-0}; G_HIGH=${G_HIGH:-0}; G_TOTAL=${G_TOTAL:-0}
+
+              MAX_CRITICAL=$((T_CRITICAL > G_CRITICAL ? T_CRITICAL : G_CRITICAL))
+              MAX_HIGH=$((T_HIGH > G_HIGH ? T_HIGH : G_HIGH))
+
+              if [ "$MAX_CRITICAL" -gt 0 ]; then
+                echo "| :rotating_light: Dependencies (Trivy) | **Critical** | ${T_CRITICAL} critical, ${T_HIGH} high, ${T_TOTAL} total |"
+                echo "| :rotating_light: Dependencies (Grype) | **Critical** | ${G_CRITICAL} critical, ${G_HIGH} high, ${G_TOTAL} total |"
+              elif [ "$MAX_HIGH" -gt 0 ]; then
+                echo "| :warning: Dependencies (Trivy) | High | ${T_HIGH} high, ${T_TOTAL} total |"
+                echo "| :warning: Dependencies (Grype) | High | ${G_HIGH} high, ${G_TOTAL} total |"
+              else
+                echo "| :white_check_mark: Dependencies (Trivy) | Pass | ${T_TOTAL} total (no critical/high) |"
+                echo "| :white_check_mark: Dependencies (Grype) | Pass | ${G_TOTAL} total (no critical/high) |"
+              fi
+
+              echo "| :package: SBOM | Generated | ${SBOM_COMPONENT_COUNT} components (CycloneDX) |"
+            elif [ "$SBOM_RESULT" = "failure" ]; then
+              echo "| :x: Dependencies | Failed | Check workflow logs |"
+            else
+              echo "| :fast_forward: Dependencies | Skipped | - |"
+            fi
+
+            echo ""
+            echo "*Scanned at $(date -u '+%Y-%m-%d %H:%M UTC')*"
+          } > "$BODY_FILE"
+
+          echo "Generated PR comment body:"
+          cat "$BODY_FILE"
+
+      - name: Upload PR comment artifact
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
+        with:
+          name: pr-comment-body
+          path: ${{ runner.temp }}/pr-comment
+          retention-days: 1
+          if-no-files-found: error
+
+  # ================================================================
+  # JOB 4: STATUS GATE (merge gate)
+  # ================================================================
+  status:
+    name: Security Status
+    runs-on: ubuntu-24.04
+    needs: [secret-scan, sbom-scan]
+    if: always()
+
+    steps:
+      - name: Evaluate security results
+        env:
+          FAIL_ON_SECRETS: ${{ inputs.fail-on-secrets }}
+          SECRET_RESULT: ${{ needs.secret-scan.result }}
+          SECRET_HAS_FINDINGS: ${{ needs.secret-scan.outputs.has-findings }}
+          SECRET_FINDINGS_COUNT: ${{ needs.secret-scan.outputs.findings-count }}
+          SBOM_RESULT: ${{ needs.sbom-scan.result }}
+        run: |
+          FAILED="false"
+
+          if [ "$FAIL_ON_SECRETS" = "true" ] && [ "$SECRET_HAS_FINDINGS" = "true" ]; then
+            echo "::error::TruffleHog detected ${SECRET_FINDINGS_COUNT} potential secret(s). Remove them before merging."
+            FAILED="true"
+          fi
+
+          if [ "$SECRET_RESULT" = "failure" ]; then
+            echo "::error::Secret scan job failed. Check logs."
+            FAILED="true"
+          fi
+
+          if [ "$SBOM_RESULT" = "failure" ]; then
+            echo "::warning::SBOM/dependency scan job failed. Check logs."
+          fi
+
+          if [ "$FAILED" = "true" ]; then
+            exit 1
+          fi
+
+          echo "All security checks passed."

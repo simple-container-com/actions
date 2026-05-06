@@ -1,0 +1,79 @@
+name: Security Scan Comment (reusable)
+
+# Companion to security-scan.yml. Triggered in consumer repos by `workflow_run`
+# after the security-scan workflow completes. Runs in the *base repo* context
+# with `pull-requests: write`, so it can post comments on fork-PRs whose own
+# scan workflow ran with a read-only token.
+#
+# This workflow MUST NOT touch PR code. It only consumes the artifact (a
+# pre-rendered markdown body) produced by build-comment in the scan workflow.
+#
+# Pattern reference: GitHub Security Lab "preventing pwn requests".
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  pull-requests: write
+  actions: read
+
+jobs:
+  comment:
+    name: Post PR Comment
+    runs-on: ubuntu-24.04
+    # Only post when the scan workflow ran for a pull_request event
+    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion != 'cancelled'
+
+    steps:
+      - name: Download PR comment artifact
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16  # v4.1.8
+        with:
+          name: pr-comment-body
+          path: pr-comment
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Post or update PR comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          BODY_FILE="pr-comment/body.md"
+          PR_FILE="pr-comment/pr-number.txt"
+
+          if [ ! -f "$BODY_FILE" ] || [ ! -f "$PR_FILE" ]; then
+            echo "::warning::pr-comment artifact missing — skipping comment."
+            exit 0
+          fi
+
+          # Validate PR number is digits only (artifact comes from a workflow that
+          # ran in the PR context — defensive check against artifact tampering)
+          PR_NUMBER="$(cat "$PR_FILE")"
+          if ! printf '%s' "$PR_NUMBER" | grep -qE '^[0-9]+$'; then
+            echo "::error::Invalid PR number in artifact: '$PR_NUMBER'"
+            exit 1
+          fi
+
+          # Read body via env var, never inline into shell
+          BODY_CONTENT="$(cat "$BODY_FILE")"
+          export BODY_CONTENT
+
+          # Find existing bot comment by marker
+          COMMENT_ID="$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | contains("## Security Scan Results")) | .id' \
+            2>/dev/null | head -1)"
+
+          if [ -n "$COMMENT_ID" ]; then
+            echo "Updating existing comment $COMMENT_ID"
+            gh api "repos/$REPO/issues/comments/$COMMENT_ID" \
+              -X PATCH \
+              -f body="$BODY_CONTENT"
+          else
+            echo "Creating new comment on PR #$PR_NUMBER"
+            gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
+              -X POST \
+              -f body="$BODY_CONTENT"
+          fi

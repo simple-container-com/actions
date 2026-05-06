@@ -1,0 +1,30 @@
+name: Lint
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    name: actionlint + shellcheck
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Run actionlint (with shellcheck)
+        run: |
+          set -euo pipefail
+          # actionlint's official Docker image bundles shellcheck for the run: blocks
+          docker run --rm \
+            -v "$PWD:/repo:ro" \
+            -w /repo \
+            rhysd/actionlint:1.7.4 \
+            -color
