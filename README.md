@@ -154,7 +154,7 @@ The workflows are designed assuming the consumer is a **public repo** that may r
 - **PR-controlled strings are never inlined into shell.** PR title, body, branch, etc. are passed through `env:` vars and validated where they reach commands. Each `.sh` script asserts its inputs match a strict regex before use.
 - **Third-party action surface is minimal and pinned.** Only first-party `actions/*` is used (checkout, upload-artifact, download-artifact). Each is referenced by full 40-char commit SHA with a `# vN` trailing comment for readability.
 - **Tool Docker images are pinned by tag AND `@sha256` digest.** A digest is immutable; even if upstream re-publishes the same tag, the runner pulls the bytes we audited.
-- **Image references are validated.** Every `.sh` script that runs `docker run` first asserts the image reference matches `^[a-zA-Z0-9._/-]+:[A-Za-z0-9._-]+(@sha256:[a-f0-9]{64})?$` before passing it to docker.
+- **Image references are validated.** Every `.sh` script that runs `docker run` first asserts the image reference matches `^[A-Za-z0-9][A-Za-z0-9._/-]*:[A-Za-z0-9._-]+@sha256:[a-f0-9]{64}$` before passing it to docker. The trailing `@sha256:` digest is **mandatory**, and a leading `-` is rejected.
 - **Comment posting cannot read PR code.** The privileged comment workflows run on `workflow_run` and consume only the rendered comment artifact.
 
 ## Third-party action / tool audit
@@ -202,15 +202,21 @@ The [`semgrep-scan/rules/`](semgrep-scan/rules/) ruleset ships with the `semgrep
 
 | ID | Severity | Detects |
 |---|---|---|
-| `gha-script-injection-via-github-event` | ERROR | `${{ github.event.* }}` interpolated into a `run:` block (single- and multi-line) |
-| `gha-script-injection-via-attacker-controlled-context` | ERROR | `head_ref`, `head_commit.message`, `issue.title`, etc. interpolated into `run:` |
+| `gha-script-injection-via-github-event` | ERROR | `${{ github.event.* }}` interpolated into a `run:` block (single- and multi-line, step-bounded) |
+| `gha-script-injection-via-attacker-controlled-context` | ERROR | `head_ref`, head commit message, issue/PR title/body, comment/review body, `workflow_run.head_*`, `inputs.*`, `ref_name` interpolated into `run:` |
 | `gha-pull-request-target-with-pr-head-checkout` | ERROR | Classic pwn-request: `pull_request_target` + `actions/checkout` of the PR head |
-| `gha-unpinned-third-party-action` | WARNING | Third-party action referenced by tag instead of 40-char commit SHA |
+| `gha-unpinned-third-party-action` | WARNING | Third-party action referenced by tag instead of 40-char commit SHA (catches quoted variants) |
 | `gha-unpinned-first-party-action` | INFO | `actions/*` referenced by tag (defence-in-depth) |
-| `gha-permissions-write-all` | ERROR | Top-level `permissions: write-all` |
-| `gha-checkout-persist-credentials-true` | ERROR | `actions/checkout` with explicit `persist-credentials: true` |
-| `gha-self-hosted-runner` | WARNING | `runs-on: self-hosted` (PR code on shared org hardware) |
-| `gha-secret-echoed` | ERROR | `echo "${{ secrets.X }}"` writes secrets to logs |
+| `gha-permissions-write-all` | ERROR | Top-level `permissions: write-all` (incl. quoted) |
+| `gha-checkout-persist-credentials-true` | ERROR | `actions/checkout` with explicit `persist-credentials: true` (scoped to checkout) |
+| `gha-self-hosted-runner` | WARNING | `runs-on: self-hosted` — single-string, inline-array, or block-list form |
+| `gha-secret-echoed` | ERROR | echo / printf / tee / heredoc that writes a secret to a log |
+| `gha-cache-key-attacker-controlled` | ERROR | `actions/cache` key/restore-keys built from PR/issue/comment/inputs context (cache poisoning) |
+| `gha-security-job-continue-on-error` | ERROR | `continue-on-error: true` on a security-named job (semgrep / sbom-scan / trufflehog / …) |
+| `gha-workflow-run-checkout-head-sha` | ERROR | Privileged `workflow_run` job that checks out the upstream head SHA — re-introduces pwn-request risk |
+| `gha-reusable-workflow-self-call` | WARNING | `uses: ./.github/workflows/<self>` recursion |
+| `gha-security-job-permanently-disabled` | ERROR | `if: false` on a security-named job (silent gate disable) |
+| `gha-comment-body-via-argv` | WARNING | `gh ... --body "$(cat ...)"` — switch to `jq -n --rawfile body … \| gh api --input -` |
 
 ### Tests
 
@@ -228,8 +234,9 @@ Planned for follow-up PRs:
 
 - Cosign / SLSA artifact signing
 - Signature verification on the consume side
-- More Semgrep rules as patterns prove their worth
+- More Semgrep rules as patterns prove their worth (next batch: artifact-name collision detection, secret-detector for non-`run:` script-style steps, allowlist of registry packs)
 - Wiring private SC repos once the public-repo design is proven
+- Cut a `v1` tag and migrate internal `@main` references to it
 
 ## Versioning
 

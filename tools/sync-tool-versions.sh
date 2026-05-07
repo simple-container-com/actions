@@ -4,7 +4,7 @@
 #
 # Usage:
 #   tools/sync-tool-versions.sh --check    # exit 1 if any consumer is out of sync
-#   tools/sync-tool-versions.sh --apply    # rewrite consumers to match the Dockerfile
+#   tools/sync-tool-versions.sh --apply    # rewrite consumers; re-runs check at the end
 #
 # Why this exists:
 #   Dependabot tracks `versions/Dockerfile` (docker ecosystem) and opens
@@ -47,61 +47,76 @@ declare -A targets=(
   [shellcheck]='.github/workflows/lint.yml'
 )
 
-drift=0
-applied=0
+run_pass() {
+  # Args: $1 = pass mode (--check|--apply). Echoes drift count to stdout's
+  # last line; logs everything else to stderr. Returns 0 on no drift, 1 on
+  # any drift (or invalid Dockerfile). Re-entrant (called twice in --apply).
+  local pass_mode="$1"
+  local drift=0
+  local applied=0
+  declare -A seen_stages=()
 
-# Parse FROM lines: `FROM <image>:<tag>@sha256:<digest> AS <name>`
-while IFS= read -r line; do
-  if [[ ! "$line" =~ ^FROM[[:space:]]+([^[:space:]]+)[[:space:]]+AS[[:space:]]+([A-Za-z0-9_-]+)[[:space:]]*$ ]]; then
-    continue
-  fi
-  pin="${BASH_REMATCH[1]}"
-  stage="${BASH_REMATCH[2]}"
+  while IFS= read -r line; do
+    # Strip CR / trailing whitespace.
+    line="${line%$'\r'}"
+    if [[ ! "$line" =~ ^FROM[[:space:]]+([^[:space:]]+)[[:space:]]+AS[[:space:]]+([A-Za-z0-9_-]+)[[:space:]]*$ ]]; then
+      continue
+    fi
+    local pin="${BASH_REMATCH[1]}"
+    local stage="${BASH_REMATCH[2]}"
 
-  if [[ ! "$pin" =~ ^[A-Za-z0-9._/-]+:[A-Za-z0-9._-]+@sha256:[a-f0-9]{64}$ ]]; then
-    echo "::error::Bad FROM in versions/Dockerfile: '$line' (must be image:tag@sha256:digest)"
-    exit 1
-  fi
-
-  files="${targets[$stage]:-}"
-  if [ -z "$files" ]; then
-    echo "::error::Stage '$stage' in Dockerfile has no entry in tools/sync-tool-versions.sh"
-    drift=1
-    continue
-  fi
-
-  # Strip the tag and digest to get just the image base (e.g. ghcr.io/anchore/syft).
-  base_with_colon="${pin%%@*}"
-  base="${base_with_colon%:*}"
-
-  # Escape regex metachars in $base for grep -E. Only `.` and `/` actually
-  # appear in our image bases (e.g. ghcr.io/anchore/syft).
-  base_re="${base//./\\.}"
-  pin_re="${base_re}:[A-Za-z0-9._-]+@sha256:[a-f0-9]{64}"
-
-  for f in $files; do
-    abs="$REPO_ROOT/$f"
-    if [ ! -f "$abs" ]; then
-      echo "::error::Target file '$f' (for stage '$stage') not found"
+    if [[ ! "$pin" =~ ^[A-Za-z0-9._/-]+:[A-Za-z0-9._-]+@sha256:[a-f0-9]{64}$ ]]; then
+      echo "::error::Bad FROM in versions/Dockerfile: '$line' (must be image:tag@sha256:digest)" >&2
       drift=1
       continue
     fi
 
-    # All distinct pins for this base in the file (should be exactly one,
-    # but we tolerate multiples as long as they all match).
-    mapfile -t current < <(grep -oE "$pin_re" -- "$abs" | sort -u)
+    if [ -n "${seen_stages[$stage]:-}" ]; then
+      echo "::error::Stage '$stage' appears more than once in versions/Dockerfile" >&2
+      drift=1
+      continue
+    fi
+    seen_stages[$stage]=1
 
-    if [ "${#current[@]}" -eq 0 ]; then
-      echo "::error::No image ref found for '$base' in '$f'"
+    local files="${targets[$stage]:-}"
+    if [ -z "$files" ]; then
+      echo "::error::Stage '$stage' in Dockerfile has no entry in tools/sync-tool-versions.sh targets map" >&2
       drift=1
       continue
     fi
 
-    for c in "${current[@]}"; do
-      if [ "$c" != "$pin" ]; then
-        if [ "$MODE" = "--apply" ]; then
-          # In-place replace: literal-string match, no regex
-          python3 -c '
+    # Strip the tag and digest to get just the image base (e.g. ghcr.io/anchore/syft).
+    local base_with_colon="${pin%%@*}"
+    local base="${base_with_colon%:*}"
+
+    # Escape regex metachars in $base for grep -E. Only `.` and `/` actually
+    # appear in our image bases (e.g. ghcr.io/anchore/syft).
+    local base_re="${base//./\\.}"
+    local pin_re="${base_re}:[A-Za-z0-9._-]+@sha256:[a-f0-9]{64}"
+
+    local f
+    for f in $files; do
+      local abs="$REPO_ROOT/$f"
+      if [ ! -f "$abs" ]; then
+        echo "::error::Target file '$f' (for stage '$stage') not found" >&2
+        drift=1
+        continue
+      fi
+
+      local current
+      mapfile -t current < <(grep -oE "$pin_re" -- "$abs" | sort -u)
+
+      if [ "${#current[@]}" -eq 0 ]; then
+        echo "::error::No image ref found for '$base' in '$f'" >&2
+        drift=1
+        continue
+      fi
+
+      local c
+      for c in "${current[@]}"; do
+        if [ "$c" != "$pin" ]; then
+          if [ "$pass_mode" = '--apply' ]; then
+            python3 -c '
 import sys, pathlib
 path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
 p = pathlib.Path(path)
@@ -109,28 +124,64 @@ text = p.read_text()
 new_text = text.replace(old, new)
 if new_text != text:
     p.write_text(new_text)
-            ' "$abs" "$c" "$pin"
-          printf 'updated %s: %s -> %s\n' "$f" "$c" "$pin"
-          applied=1
-        else
-          printf '::error file=%s::%s has %s, Dockerfile says %s. Run tools/sync-tool-versions.sh --apply.\n' \
-            "$f" "$f" "$c" "$pin"
-          drift=1
+              ' "$abs" "$c" "$pin"
+            printf 'updated %s: %s -> %s\n' "$f" "$c" "$pin" >&2
+            applied=1
+          else
+            printf '::error file=%s::%s has %s, Dockerfile says %s. Run tools/sync-tool-versions.sh --apply.\n' \
+              "$f" "$f" "$c" "$pin" >&2
+            drift=1
+          fi
         fi
-      fi
+      done
     done
-  done
-done < "$DOCKERFILE"
+  done < "$DOCKERFILE"
 
-if [ "$MODE" = "--apply" ]; then
+  # Detect REMOVED stages: every key in `targets` must have appeared in the
+  # Dockerfile pass above. A targets row without a Dockerfile FROM means
+  # someone deleted the FROM, leaving the consumer file untracked.
+  local k
+  for k in "${!targets[@]}"; do
+    if [ -z "${seen_stages[$k]:-}" ]; then
+      echo "::error::Stage '$k' is in tools/sync-tool-versions.sh targets but missing from versions/Dockerfile" >&2
+      drift=1
+    fi
+  done
+
+  printf '%s\n%s\n' "$drift" "$applied"
+  return 0
+}
+
+# First pass.
+out="$(run_pass "$MODE")"
+drift="$(printf '%s\n' "$out" | sed -n '1p')"
+applied="$(printf '%s\n' "$out" | sed -n '2p')"
+
+if [ "$MODE" = '--apply' ]; then
+  # Re-run --check after the propagation pass: catches the case where the
+  # apply pass was aborted by an unrelated drift error (unknown stage,
+  # missing target, etc.) and the working tree is now PARTIALLY synced.
+  if [ "$drift" -ne 0 ]; then
+    echo '::error::--apply could not fully resolve drift (see errors above). Refusing to declare success.' >&2
+    exit 1
+  fi
+  echo "Re-running --check after --apply to confirm propagation..." >&2
+  out2="$(run_pass --check)"
+  recheck_drift="$(printf '%s\n' "$out2" | sed -n '1p')"
+  if [ "$recheck_drift" -ne 0 ]; then
+    echo '::error::--apply completed but post-apply --check still reports drift.' >&2
+    exit 1
+  fi
   if [ "$applied" -eq 0 ]; then
-    echo 'Already in sync — no changes.'
+    echo 'Already in sync — no changes applied.' >&2
+  else
+    echo 'All tool versions propagated successfully.' >&2
   fi
   exit 0
 fi
 
 if [ "$drift" -ne 0 ]; then
-  echo '::error::Tool version drift detected. See errors above.'
+  echo '::error::Tool version drift detected. See errors above.' >&2
   exit 1
 fi
-echo 'All tool versions in sync with versions/Dockerfile.'
+echo 'All tool versions in sync with versions/Dockerfile.' >&2

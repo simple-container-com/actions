@@ -14,7 +14,7 @@ set -euo pipefail
 # Validate image refs.
 for img_var in TRIVY_IMAGE GRYPE_IMAGE; do
   img_val="${!img_var}"
-  if ! printf '%s' "$img_val" | grep -qE '^[a-zA-Z0-9._/-]+:[A-Za-z0-9._-]+(@sha256:[a-f0-9]{64})?$'; then
+  if ! printf '%s' "$img_val" | grep -qE '^[A-Za-z0-9][A-Za-z0-9._/-]*:[A-Za-z0-9._-]+@sha256:[a-f0-9]{64}$'; then
     echo "::error::Refusing to use $img_var='$img_val' — not a plain image:tag reference."
     exit 1
   fi
@@ -33,7 +33,11 @@ GRYPE_JSON="$OUTPUT_DIR/grype-scan.json"
 
 mkdir -p "$OUTPUT_DIR"
 
-# Run Trivy in background.
+TRIVY_LOG="$OUTPUT_DIR/trivy.log"
+GRYPE_LOG="$OUTPUT_DIR/grype.log"
+
+# Run Trivy in background. Without --exit-code, Trivy returns 0 on success
+# regardless of findings; any non-zero indicates an infra failure.
 echo 'Starting Trivy scan...'
 docker run --rm \
   -v "$SBOM_ABS:/sbom.json:ro" \
@@ -42,10 +46,12 @@ docker run --rm \
   sbom /sbom.json \
   --severity 'UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL' \
   --format json \
-  --output /output/trivy-scan.json &
+  --output /output/trivy-scan.json \
+  > "$TRIVY_LOG" 2>&1 &
 TRIVY_PID=$!
 
-# Run Grype in background.
+# Run Grype in background. Without --fail-on, Grype returns 0 on success
+# regardless of findings; any non-zero indicates an infra failure.
 echo 'Starting Grype scan...'
 docker run --rm \
   -v "$SBOM_ABS:/sbom.json:ro" \
@@ -53,14 +59,41 @@ docker run --rm \
   "$GRYPE_IMAGE" \
   "sbom:/sbom.json" \
   -o json \
-  --file /output/grype-scan.json &
+  --file /output/grype-scan.json \
+  > "$GRYPE_LOG" 2>&1 &
 GRYPE_PID=$!
 
-# Wait for both. Don't error out the script on scanner non-zero — we still
-# parse whatever was produced and surface counts.
+# Wait for both. Capture each scanner's exit code; fail the whole job on any
+# non-zero so a broken scanner can't masquerade as 0 findings.
 echo 'Waiting for parallel scans to complete...'
-wait "$TRIVY_PID" || echo "::warning::Trivy exited non-zero"
-wait "$GRYPE_PID" || echo "::warning::Grype exited non-zero"
+trivy_status=0
+grype_status=0
+wait "$TRIVY_PID" || trivy_status=$?
+wait "$GRYPE_PID" || grype_status=$?
+
+if [ "$trivy_status" -ne 0 ]; then
+  echo "::error::Trivy exited with code $trivy_status. Logs:"
+  cat -- "$TRIVY_LOG" >&2
+  exit 1
+fi
+if [ "$grype_status" -ne 0 ]; then
+  echo "::error::Grype exited with code $grype_status. Logs:"
+  cat -- "$GRYPE_LOG" >&2
+  exit 1
+fi
+
+# Both scanners must produce parseable JSON output; missing/empty file is
+# also a failure, not a "0 findings" pass.
+for f in "$TRIVY_JSON" "$GRYPE_JSON"; do
+  if [ ! -s "$f" ]; then
+    echo "::error::Scanner output missing or empty: $f"
+    exit 1
+  fi
+  if ! jq -e . "$f" >/dev/null 2>&1; then
+    echo "::error::Scanner output is not valid JSON: $f"
+    exit 1
+  fi
+done
 
 # --- Parse Trivy results ---
 T_TOTAL=0; T_CRITICAL=0; T_HIGH=0; T_MEDIUM=0; T_LOW=0; T_UNKNOWN=0

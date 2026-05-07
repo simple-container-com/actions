@@ -100,8 +100,11 @@ jobs:
           set -euo pipefail
           failed='false'
 
-          if [ "${SCAN_RESULT}" = 'failure' ]; then
-            echo '::error::Semgrep scan job failed. Check logs.'
+          # Required: Semgrep scan must explicitly succeed. `cancelled` and
+          # `skipped` count as failure — otherwise a fork PR that's
+          # cancelled mid-flight could merge without ever being scanned.
+          if [ "${SCAN_RESULT}" != 'success' ]; then
+            echo "::error::Semgrep scan job did not succeed (result=${SCAN_RESULT})."
             exit 1
           fi
 

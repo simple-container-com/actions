@@ -2,17 +2,22 @@ name: Security Scan Comment (reusable)
 
 # Companion to security-scan.yml. Triggered in consumer repos by `workflow_run`
 # after the security-scan workflow completes. Runs in the *base repo* context
-# with `pull-requests: write`, so it can post comments on fork-PRs whose own
+# with `pull-requests: write`, so it can post comments on fork PRs whose own
 # scan workflow ran with a read-only token.
 #
-# This workflow MUST NOT touch PR code. It only consumes the artifact (a
-# pre-rendered markdown body) produced by build-pr-comment in the scan workflow.
+# Trust posture (per Codex review round 1, P1 #1):
+#   - PR number is derived from the trusted `workflow_run` event payload
+#     (`pull_requests[0].number` for same-repo PRs, API lookup by
+#     `head_sha` for fork PRs). NEVER read from the artifact.
+#   - Marker is hardcoded here (`## Security Scan Results`). NEVER read from
+#     the artifact.
+#   - Body is read from artifact (rendered by trusted workflow code, size-
+#     capped server-side).
 
 on:
   workflow_call:
 
 permissions:
-  contents: read
   pull-requests: write
   actions: read
 
@@ -23,8 +28,38 @@ jobs:
     if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion != 'cancelled'
 
     steps:
+      - name: Resolve PR number from workflow_run event
+        id: pr
+        env:
+          PULL_REQUESTS_JSON: ${{ toJSON(github.event.workflow_run.pull_requests) }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Same-repo PRs populate pull_requests[]. Fork PRs leave it empty,
+          # so we look the PR up by head_sha via the API (trusted token).
+          n="$(printf '%s' "$PULL_REQUESTS_JSON" | jq -r '.[0].number // empty')"
+          if [ -z "$n" ]; then
+            if ! printf '%s' "$HEAD_SHA" | grep -qE '^[0-9a-f]{40}$'; then
+              echo "::error::workflow_run.head_sha is not a 40-char SHA: '$HEAD_SHA'"
+              exit 1
+            fi
+            n="$(gh api "repos/$REPO/pulls?state=open&per_page=100" \
+              --jq ".[] | select(.head.sha == \"$HEAD_SHA\") | .number" \
+              | head -n 1)"
+          fi
+          if ! printf '%s' "$n" | grep -qE '^[1-9][0-9]*$'; then
+            echo '::error::Could not determine PR number from workflow_run event.'
+            exit 1
+          fi
+          echo "number=$n" >> "$GITHUB_OUTPUT"
+
       - name: Post or update sticky PR comment
         uses: simple-container-com/actions/post-pr-comment@main
         with:
           workflow-run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
+          pr-number: ${{ steps.pr.outputs.number }}
+          artifact-name: pr-comment-body
+          marker: '## Security Scan Results'

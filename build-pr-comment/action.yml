@@ -52,7 +52,6 @@ runs:
         PRODUCT_NAME_INPUT: ${{ inputs.product-name }}
         DEFAULT_PRODUCT_NAME: ${{ github.event.repository.name }}
         GIT_SHA: ${{ github.sha }}
-        PR_NUMBER: ${{ github.event.pull_request.number }}
         SECRET_RESULT: ${{ inputs.secret-scan-result }}
         SECRET_HAS_FINDINGS: ${{ inputs.secret-has-findings }}
         SECRET_FINDINGS_COUNT: ${{ inputs.secret-findings-count }}

@@ -1,6 +1,9 @@
 rules:
   # ====================================================================
-  # 1. Script injection via github.event context
+  # 1. Script injection via github.event context. Single-line `run:` and
+  #    multi-line `run: |` block scalars. The block-scalar variant uses an
+  #    indentation backreference so it cannot cross into the next step
+  #    (which would have less indentation than the body lines).
   # ====================================================================
   - id: gha-script-injection-via-github-event
     languages: [yaml]
@@ -14,10 +17,12 @@ rules:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: echo "$PR_TITLE"
     pattern-either:
-      # Single-line: `run: ... ${{ github.event.X }} ...`
-      - pattern-regex: 'run:[ \t]+[^\n|>][^\n]*\$\{\{[^}]*github\.event\.[^}]+\}\}'
-      # Multi-line: `run: |` followed by ${{ github.event.X }} within ~2000 chars
-      - pattern-regex: '(?s)run:[ \t]*[|>][^\n]*\n[\s\S]{0,2000}?\$\{\{[^}]*github\.event\.[^}]+\}\}'
+      # Single-line: `run: foo ${{ github.event.X }}` (with or without leading `- `).
+      - pattern-regex: '(?m)^[ \t]+(?:- )?run:[ \t]+[^|>\n][^\n]*\$\{\{[^}]*github\.event\.[^}]+\}\}'
+      # Multi-line `run: |` block. The body iteration excludes lines that
+      # begin a sibling step (`[ \t]+- `), so the match cannot leak into
+      # the next step's `env:` mapping.
+      - pattern-regex: '(?ms)^[ \t]+(?:- )?run:[ \t]*[|>][^\n]*\n((?:(?![ \t]+- )[^\n]*\n){0,30}?)[^\n]*\$\{\{[^}]*github\.event\.[^}]+\}\}'
     paths:
       include:
         - "**/.github/workflows/*.yml"
@@ -30,20 +35,19 @@ rules:
       reference: "https://securitylab.github.com/research/github-actions-untrusted-input/"
 
   # ====================================================================
-  # 2. Same — for any context that may be attacker-controlled
-  #    (head_ref, head_commit.message, issue.title, etc.)
+  # 2. Same — for any other attacker-controlled context.
   # ====================================================================
   - id: gha-script-injection-via-attacker-controlled-context
     languages: [yaml]
     severity: ERROR
     message: >-
-      `${{ github.head_ref }}`, `${{ github.event.head_commit.message }}`,
-      `${{ github.event.issue.title }}`, `${{ github.event.comment.body }}`
-      and similar are attacker-controlled. Don't interpolate them into a
-      `run:` block — pass them through `env:` and quote on use.
+      Attacker-controlled values (`github.head_ref`, head commit message,
+      issue/PR title/body, comment/review body, workflow_run head fields,
+      reusable-workflow `inputs.*`) must not be interpolated into a `run:`
+      block. Pass them through `env:` and quote on use.
     pattern-either:
-      - pattern-regex: 'run:[ \t]+[^\n|>][^\n]*\$\{\{[^}]*(github\.head_ref|head_commit\.message|issue\.title|comment\.body|review\.body|pull_request\.body|pull_request\.title|pull_request\.head\.ref)[^}]*\}\}'
-      - pattern-regex: '(?s)run:[ \t]*[|>][^\n]*\n[\s\S]{0,2000}?\$\{\{[^}]*(github\.head_ref|head_commit\.message|issue\.title|comment\.body|review\.body|pull_request\.body|pull_request\.title|pull_request\.head\.ref)[^}]*\}\}'
+      - pattern-regex: '(?m)^[ \t]+(?:- )?run:[ \t]+[^|>\n][^\n]*\$\{\{[^}]*(github\.head_ref|head_commit\.message|issue\.title|issue\.body|comment\.body|review\.body|pull_request\.body|pull_request\.title|pull_request\.head\.ref|pull_request\.head\.label|workflow_run\.head_branch|workflow_run\.head_commit\.message|github\.ref_name|inputs\.)[^}]*\}\}'
+      - pattern-regex: '(?ms)^[ \t]+(?:- )?run:[ \t]*[|>][^\n]*\n((?:(?![ \t]+- )[^\n]*\n){0,30}?)[^\n]*\$\{\{[^}]*(github\.head_ref|head_commit\.message|issue\.title|issue\.body|comment\.body|review\.body|pull_request\.body|pull_request\.title|pull_request\.head\.ref|pull_request\.head\.label|workflow_run\.head_branch|workflow_run\.head_commit\.message|github\.ref_name|inputs\.)[^}]*\}\}'
     paths:
       include:
         - "**/.github/workflows/*.yml"
@@ -54,17 +58,18 @@ rules:
       category: security
 
   # ====================================================================
-  # 3. pull_request_target with checkout of PR head — classic pwn-request
+  # 3. pull_request_target with checkout of PR head — classic pwn-request.
   # ====================================================================
   - id: gha-pull-request-target-with-pr-head-checkout
     languages: [yaml]
     severity: ERROR
     message: >-
-      `pull_request_target` runs with secrets and write-scope tokens. If you
-      then `actions/checkout` the PR head ref, attacker code runs with full
-      privileges. Use `pull_request` for PR scanning, or split into a scan
-      job (pull_request) + a privileged comment/upload job (workflow_run).
-    pattern-regex: '(?s)pull_request_target.*?actions/checkout.*?(github\.event\.pull_request\.head\.(sha|ref)|github\.head_ref)'
+      `pull_request_target` runs with secrets and write-scope tokens. If
+      the workflow then `actions/checkout`s the PR head ref, attacker code
+      runs with full privileges. Use `pull_request` for PR scanning, or
+      split into a scan job (pull_request) + a privileged comment/upload
+      job (workflow_run).
+    pattern-regex: '(?s)\bpull_request_target\b[\s\S]*?actions/checkout[^\n]*\n[ \t]+with:\s*(\n[ \t]+[^\n]*)*?ref:[ \t]*[^\n]*(github\.event\.pull_request\.head\.(sha|ref)|github\.head_ref|github\.event\.workflow_run\.head_sha)'
     paths:
       include:
         - "**/.github/workflows/*.yml"
@@ -74,7 +79,8 @@ rules:
       reference: "https://securitylab.github.com/research/github-actions-preventing-pwn-requests/"
 
   # ====================================================================
-  # 4. Unpinned third-party action (anything not actions/ * or pinned @SHA)
+  # 4. Unpinned third-party action (not actions/ * and not pinned @SHA).
+  #    Catches both unquoted and quoted `uses:` forms.
   # ====================================================================
   - id: gha-unpinned-third-party-action
     languages: [yaml]
@@ -84,9 +90,7 @@ rules:
       mutable tag. A compromised tag (cf. `tj-actions/changed-files` 2025)
       lets an attacker steal your workflow's secrets. Replace
       `uses: foo/bar@vN` with `uses: foo/bar@<sha>  # vN`.
-    # Match `uses: <owner>/<rest>@<ref>` where owner is NOT a trusted prefix
-    # AND <ref> is NOT a 40-char hex SHA.
-    pattern-regex: 'uses:\s+(?!actions/|github/|simple-container-com/|\./)[A-Za-z0-9._-]+/[^@\s]+@(?![0-9a-f]{40}\b)\S+'
+    pattern-regex: 'uses:\s+["'']?(?!actions/|github/|simple-container-com/|\./)[A-Za-z0-9._-]+/[^@\s"'']+@(?![0-9a-f]{40}\b)[^"''\s]+'
     paths:
       include:
         - "**/.github/workflows/*.yml"
@@ -98,15 +102,14 @@ rules:
       cwe: "CWE-1357: Reliance on Insufficiently Trustworthy Component"
 
   # ====================================================================
-  # 5. Even first-party actions/* should be pinned in production workflows
+  # 5. First-party `actions/*` should also be pinned by SHA.
   # ====================================================================
   - id: gha-unpinned-first-party-action
     languages: [yaml]
     severity: INFO
     message: >-
-      Pin first-party `actions/*` by 40-char commit SHA too — it's cheap
-      defence-in-depth and catches drift.
-    pattern-regex: 'uses:\s+actions/[^@\s]+@(?![0-9a-f]{40}\b)\S+'
+      Pin first-party `actions/*` by 40-char commit SHA — defence-in-depth.
+    pattern-regex: 'uses:\s+["'']?actions/[^@\s"'']+@(?![0-9a-f]{40}\b)[^"''\s]+'
     paths:
       include:
         - "**/.github/workflows/*.yml"
@@ -117,7 +120,7 @@ rules:
       category: best-practice
 
   # ====================================================================
-  # 6. permissions: write-all — never appropriate
+  # 6. permissions: write-all — never appropriate. Catches quoted variants.
   # ====================================================================
   - id: gha-permissions-write-all
     languages: [yaml]
@@ -126,7 +129,7 @@ rules:
       `permissions: write-all` grants the workflow full write to every
       scope, defeating the principle of least privilege. List only the
       scopes the workflow actually needs.
-    pattern-regex: '^\s*permissions:\s+write-all\s*$'
+    pattern-regex: '^\s*permissions:\s+["'']?write-all["'']?\s*(#.*)?$'
     paths:
       include:
         - "**/.github/workflows/*.yml"
@@ -136,7 +139,11 @@ rules:
       cwe: "CWE-272: Least Privilege Violation"
 
   # ====================================================================
-  # 7. Explicit `persist-credentials: true` on actions/checkout
+  # 7. Explicit `persist-credentials: true` on actions/checkout. Scoped to
+  #    actions/checkout via a regex that requires the `uses:` line of
+  #    actions/checkout within ~10 lines BEFORE the `persist-credentials:
+  #    true` line — so it doesn't trip on unrelated actions that happen to
+  #    take a similarly-named input.
   # ====================================================================
   - id: gha-checkout-persist-credentials-true
     languages: [yaml]
@@ -146,7 +153,7 @@ rules:
       GITHUB_TOKEN into `.git/config`. Any later step (build, test) can
       read it. Set to `false` unless a later step explicitly needs to
       `git push` and you accept the risk.
-    pattern-regex: '^\s*persist-credentials:\s+true\s*$'
+    pattern-regex: '(?ms)uses:\s+["'']?actions/checkout@[^\n]*\n(?:[ \t]+[^\n]*\n){0,10}?[ \t]+persist-credentials:[ \t]+["'']?[Tt]rue["'']?'
     paths:
       include:
         - "**/.github/workflows/*.yml"
@@ -157,7 +164,8 @@ rules:
       category: security
 
   # ====================================================================
-  # 8. Self-hosted runner usage in workflows that may be triggered by forks
+  # 8. Self-hosted runner usage. Catches single-string, inline-list, and
+  #    block-list forms.
   # ====================================================================
   - id: gha-self-hosted-runner
     languages: [yaml]
@@ -167,7 +175,10 @@ rules:
       hardware. If this workflow runs on `pull_request` (not _target) and
       the runner is shared, an attacker can persist or pivot. Prefer
       ubuntu-* GitHub-hosted unless the runner is single-use ephemeral.
-    pattern-regex: '^\s*runs-on:\s+(\[\s*self-hosted|self-hosted\b)'
+    pattern-either:
+      - pattern-regex: '^\s*runs-on:\s+["'']?self-hosted["'']?\s*(#.*)?$'
+      - pattern-regex: '^\s*runs-on:\s*\[[^\]]*\bself-hosted\b[^\]]*\]'
+      - pattern-regex: '(?m)^\s*runs-on:\s*\n(?:\s*-\s+[^\n]+\n)*\s*-\s+["'']?self-hosted["'']?\s*$'
     paths:
       include:
         - "**/.github/workflows/*.yml"
@@ -176,16 +187,19 @@ rules:
       category: security
 
   # ====================================================================
-  # 9. Secret printed via echo
+  # 9. Secret printed to a file/log. Catches echo/printf/tee/heredoc forms.
   # ====================================================================
   - id: gha-secret-echoed
     languages: [yaml]
     severity: ERROR
     message: >-
-      Echoing a secret to stdout writes it into the workflow log
-      (redaction is best-effort; multiline / encoded values can leak).
-      Don't do this.
-    pattern-regex: 'echo\s+[^\n]*\$\{\{\s*secrets\.'
+      Logging or piping a secret value writes it into the workflow log
+      (GitHub redaction is best-effort; multi-line / base64 / split values
+      leak). Don't do this. Pass via `env:` and consume the env var only
+      where strictly required.
+    pattern-either:
+      - pattern-regex: '\b(echo|printf|tee|cat\s*<<<|>)\s+[^\n]*\$\{\{\s*secrets\.'
+      - pattern-regex: '<<\s*[A-Za-z_][A-Za-z0-9_]*\s*\n[^\n]*\$\{\{\s*secrets\.'
     paths:
       include:
         - "**/.github/workflows/*.yml"
@@ -194,3 +208,123 @@ rules:
         - "**/action.yaml"
     metadata:
       category: security
+
+  # ====================================================================
+  # 10. (NEW) actions/cache key sourced from attacker-controlled context.
+  # ====================================================================
+  - id: gha-cache-key-attacker-controlled
+    languages: [yaml]
+    severity: ERROR
+    message: >-
+      Using `${{ github.head_ref }}`, PR title/body, `inputs.*`, or any
+      `workflow_run.head_*` field as part of an `actions/cache` key lets
+      an attacker poison the cache or steal cached artifacts on legitimate
+      PRs. Use trusted keys: `github.sha`, hashed lockfiles, or a static
+      version string.
+    pattern-regex: '(?s)uses:\s+["'']?actions/cache[^\n]*\n[ \t]+with:\s*(\n[ \t]+[^\n]*)*?(key|restore-keys):\s*[^\n]*\$\{\{[^}]*(github\.head_ref|pull_request\.title|pull_request\.body|issue\.title|issue\.body|comment\.body|workflow_run\.head_branch|workflow_run\.head_commit|inputs\.)[^}]*\}\}'
+    paths:
+      include:
+        - "**/.github/workflows/*.yml"
+        - "**/.github/workflows/*.yaml"
+    metadata:
+      category: security
+
+  # ====================================================================
+  # 11. (NEW) `continue-on-error: true` on a security-gate job.
+  # ====================================================================
+  - id: gha-security-job-continue-on-error
+    languages: [yaml]
+    severity: ERROR
+    message: >-
+      `continue-on-error: true` on a security-gating job (semgrep,
+      trufflehog, sbom, security, scan, lint, …) silently turns failures
+      into successes. Remove it or scope it to a non-gating step.
+    pattern-regex: '(?im)^[ \t]+(secret-scan|sbom-scan|semgrep|semgrep-scan|trufflehog[a-z-]*|security[a-z-]*|scan[a-z-]*)[a-z0-9-]*:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+continue-on-error:\s*["'']?true["'']?'
+    paths:
+      include:
+        - "**/.github/workflows/*.yml"
+        - "**/.github/workflows/*.yaml"
+    metadata:
+      category: security
+
+  # ====================================================================
+  # 12. (NEW) `workflow_run`-triggered job that checks out the head SHA.
+  #     This re-introduces the pwn-request risk on the privileged side.
+  # ====================================================================
+  - id: gha-workflow-run-checkout-head-sha
+    languages: [yaml]
+    severity: ERROR
+    message: >-
+      Privileged `workflow_run` workflows must NOT checkout the head SHA
+      of the upstream run. The whole point of the workflow_run split is
+      that the privileged side never executes PR code. If you need files
+      from the head, download them via the `download-artifact` action
+      (artifact contents are still untrusted, but at least no execution).
+    pattern-regex: '(?s)workflow_run:.*?actions/checkout[^\n]*\n[ \t]+with:\s*(\n[ \t]+[^\n]*)*?ref:\s*[^\n]*(workflow_run\.head_sha|workflow_run\.head_branch|workflow_run\.head_commit\.id)'
+    paths:
+      include:
+        - "**/.github/workflows/*.yml"
+        - "**/.github/workflows/*.yaml"
+    metadata:
+      category: security
+
+  # ====================================================================
+  # 14. (NEW) Reusable workflow self-call — easy way to recurse / DoS.
+  # ====================================================================
+  - id: gha-reusable-workflow-self-call
+    languages: [yaml]
+    severity: WARNING
+    message: >-
+      A `uses:` referencing the SAME workflow file is almost always a
+      mistake — at best wasted compute, at worst infinite recursion.
+    pattern-regex: 'uses:\s+["'']?\./\.github/workflows/'
+    paths:
+      include:
+        - "**/.github/workflows/*.yml"
+        - "**/.github/workflows/*.yaml"
+    metadata:
+      category: bug
+
+  # ====================================================================
+  # 15. (NEW) `if: false` / `if: ${{ false }}` permanent-skip on a
+  #     security-named job. Easy way to "soft-disable" a gate without
+  #     anyone noticing in review.
+  # ====================================================================
+  - id: gha-security-job-permanently-disabled
+    languages: [yaml]
+    severity: ERROR
+    message: >-
+      `if: false` (or `if: ${{ false }}`) on a security-named job
+      permanently skips the gate. If the job is genuinely deprecated,
+      delete it; don't leave a disabled stub.
+    pattern-regex: '(?im)^[ \t]+(secret-scan|sbom-scan|semgrep|semgrep-scan|trufflehog[a-z-]*|security[a-z-]*|scan[a-z-]*|status)[a-z0-9-]*:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+if:\s*(\$\{\{\s*)?false(\s*\}\})?'
+    paths:
+      include:
+        - "**/.github/workflows/*.yml"
+        - "**/.github/workflows/*.yaml"
+    metadata:
+      category: security
+
+  # ====================================================================
+  # 16. (NEW) Privileged comment-poster step that reads `body` from an
+  #     artifact-supplied path WITHOUT going through `gh api --input -`
+  #     or `jq --rawfile`. Mostly to enforce our own pattern.
+  # ====================================================================
+  - id: gha-comment-body-via-argv
+    languages: [yaml]
+    severity: WARNING
+    message: >-
+      When posting a comment from an artifact-rendered file, prefer
+      `jq -n --rawfile body "$F" '{body:$body}' | gh api ... --input -`
+      over `gh ... --body "$BODY"` / `-f body="$BODY"`. The argv form
+      hits length limits at MB-scale bodies and double-escapes weird
+      characters.
+    pattern-regex: 'gh\s+(api|pr|issue)\s+[^\n]*--body[\s=][^\n]*\$\(?cat'
+    paths:
+      include:
+        - "**/.github/workflows/*.yml"
+        - "**/.github/workflows/*.yaml"
+        - "**/*.sh"
+        - "**/*.bash"
+    metadata:
+      category: best-practice

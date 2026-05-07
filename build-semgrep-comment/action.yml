@@ -31,7 +31,6 @@ runs:
         PRODUCT_NAME_INPUT: ${{ inputs.product-name }}
         DEFAULT_PRODUCT_NAME: ${{ github.event.repository.name }}
         GIT_SHA: ${{ github.sha }}
-        PR_NUMBER: ${{ github.event.pull_request.number }}
         SCAN_RESULT: ${{ inputs.scan-result }}
         ERRORS: ${{ inputs.errors }}
         WARNINGS: ${{ inputs.warnings }}

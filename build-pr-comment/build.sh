@@ -33,12 +33,6 @@ else
   SHORT_SHA='unknown'
 fi
 
-PR_NUMBER_RAW="${PR_NUMBER:-}"
-if ! printf '%s' "$PR_NUMBER_RAW" | grep -qE '^[0-9]+$'; then
-  echo "::error::PR_NUMBER must be a positive integer, got: '$PR_NUMBER_RAW'"
-  exit 1
-fi
-
 SECRET_RESULT="$(sanitise "${SECRET_RESULT:-skipped}")"
 SBOM_RESULT="$(sanitise "${SBOM_RESULT:-skipped}")"
 SECRET_HAS_FINDINGS="${SECRET_HAS_FINDINGS:-false}"
@@ -53,10 +47,8 @@ G_TOTAL="$(valid_int_or_zero "${G_TOTAL:-0}")"
 
 OUT_DIR="$RUNNER_TEMP/pr-comment"
 BODY_FILE="$OUT_DIR/body.md"
-PR_FILE="$OUT_DIR/pr-number.txt"
 
 mkdir -p "$OUT_DIR"
-printf '%s\n' "$PR_NUMBER_RAW" > "$PR_FILE"
 
 {
   printf '## Security Scan Results\n\n'

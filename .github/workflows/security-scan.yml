@@ -129,18 +129,22 @@ jobs:
           set -euo pipefail
           failed='false'
 
+          # Required scan jobs must explicitly succeed. `cancelled` and
+          # `skipped` results count as failure too — otherwise a fork PR
+          # that times out / is cancelled mid-flight could merge without
+          # ever being scanned.
+          if [ "${SECRET_RESULT}" != 'success' ]; then
+            echo "::error::Secret scan job did not succeed (result=${SECRET_RESULT})."
+            failed='true'
+          fi
+          if [ "${SBOM_RESULT}" != 'success' ]; then
+            echo "::error::SBOM/dependency scan job did not succeed (result=${SBOM_RESULT})."
+            failed='true'
+          fi
+
           if [ "${FAIL_ON_SECRETS}" = 'true' ] && [ "${SECRET_HAS_FINDINGS}" = 'true' ]; then
             echo "::error::TruffleHog detected ${SECRET_FINDINGS_COUNT} potential secret(s). Remove them before merging."
             failed='true'
-          fi
-
-          if [ "${SECRET_RESULT}" = 'failure' ]; then
-            echo '::error::Secret scan job failed. Check logs.'
-            failed='true'
-          fi
-
-          if [ "${SBOM_RESULT}" = 'failure' ]; then
-            echo '::warning::SBOM/dependency scan job failed. Check logs.'
           fi
 
           if [ "${failed}" = 'true' ]; then

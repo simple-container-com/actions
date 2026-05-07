@@ -15,7 +15,8 @@
 # When Dependabot opens a PR bumping a FROM, the `tool-version-sync`
 # CI job will fail until the new pin is propagated to the consumer
 # files. Run `tools/sync-tool-versions.sh --apply` on the PR branch
-# to do that (a 1-second sed pass), commit, push.
+# to do that (in-place literal-string replace via Python), commit,
+# push.
 
 FROM ghcr.io/trufflesecurity/trufflehog:3.95.2@sha256:49d1c4fbbc580aac487ac7cb0517bb085826bd352d7578d62bb4c0c6b7205075 AS trufflehog
 FROM ghcr.io/anchore/syft:v1.44.0@sha256:86fde6445b483d902fe011dd9f68c4987dd94e07da1e9edc004e3c2422650de6 AS syft

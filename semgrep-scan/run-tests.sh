@@ -11,7 +11,7 @@ set -euo pipefail
 
 : "${SEMGREP_IMAGE:=semgrep/semgrep:1.161.0@sha256:326e5f41cc972bb423b764a14febbb62bbad29ee1c01820805d077dd868fea48}"
 
-if ! printf '%s' "$SEMGREP_IMAGE" | grep -qE '^[a-zA-Z0-9._/-]+:[A-Za-z0-9._-]+(@sha256:[a-f0-9]{64})?$'; then
+if ! printf '%s' "$SEMGREP_IMAGE" | grep -qE '^[A-Za-z0-9][A-Za-z0-9._/-]*:[A-Za-z0-9._-]+@sha256:[a-f0-9]{64}$'; then
   echo "::error::Refusing SEMGREP_IMAGE='$SEMGREP_IMAGE'"
   exit 1
 fi
@@ -90,6 +90,8 @@ done
 
 echo
 echo 'Running full repo scan (must produce zero findings)...'
+# Exclude tests/ (intentional positives) and rules/ (rule descriptions
+# quote the very patterns they detect).
 docker run --rm \
   -v "$REPO_ROOT:/src:ro" \
   -w /src \
@@ -98,7 +100,8 @@ docker run --rm \
   --config semgrep-scan/rules/ \
   --metrics=off \
   --error \
-  --exclude=semgrep-scan/tests
+  --exclude=semgrep-scan/tests \
+  --exclude=semgrep-scan/rules
 
 if [ "$failed" -ne 0 ]; then
   echo '::error::Semgrep rule tests failed.'

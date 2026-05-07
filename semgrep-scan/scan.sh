@@ -19,7 +19,7 @@ REGISTRY_PACKS="${REGISTRY_PACKS:-}"
 FAIL_ON_SEVERITY="${FAIL_ON_SEVERITY:-ERROR}"
 
 # Validate image ref shape.
-if ! printf '%s' "$SEMGREP_IMAGE" | grep -qE '^[a-zA-Z0-9._/-]+:[A-Za-z0-9._-]+(@sha256:[a-f0-9]{64})?$'; then
+if ! printf '%s' "$SEMGREP_IMAGE" | grep -qE '^[A-Za-z0-9][A-Za-z0-9._/-]*:[A-Za-z0-9._-]+@sha256:[a-f0-9]{64}$'; then
   echo "::error::Refusing SEMGREP_IMAGE='$SEMGREP_IMAGE' — not a plain image:tag reference."
   exit 1
 fi
@@ -83,6 +83,12 @@ fi
 # Run Semgrep. Mount workspace and action dir read-only; never execute code.
 # We deliberately don't pass --error here so the script can capture the JSON
 # and emit per-severity outputs; the orchestrator status job decides on fail.
+#
+# Semgrep exit codes:
+#   0  : no findings
+#   1  : findings present (treated as success here; status job gates on counts)
+#   2+ : config error, parser error, internal bug — MUST fail the job.
+SEMGREP_LOG="$OUTPUT_DIR/semgrep.log"
 set +e
 docker run --rm \
   -v "$GITHUB_WORKSPACE:/src:ro" \
@@ -94,12 +100,39 @@ docker run --rm \
   "${configs[@]}" \
   --metrics=off \
   --json \
-  --output /output/results.json
+  --output /output/results.json \
+  > "$SEMGREP_LOG" 2>&1
 exit_code=$?
 set -e
 
-if [ ! -f "$RESULTS_FILE" ] || [ ! -s "$RESULTS_FILE" ]; then
-  echo "::error::Semgrep produced no JSON output (exit=$exit_code)."
+if [ "$exit_code" -gt 1 ]; then
+  echo "::error::Semgrep exited with code $exit_code (config / runtime error). Logs:"
+  cat -- "$SEMGREP_LOG" >&2
+  exit 1
+fi
+
+if [ ! -s "$RESULTS_FILE" ]; then
+  echo '::error::Semgrep produced no JSON output despite exit code 0/1. Logs:'
+  cat -- "$SEMGREP_LOG" >&2
+  exit 1
+fi
+
+if ! jq -e . "$RESULTS_FILE" >/dev/null 2>&1; then
+  echo '::error::Semgrep output is not valid JSON.'
+  cat -- "$SEMGREP_LOG" >&2
+  exit 1
+fi
+
+# Even with a zero exit code, semgrep can report config / parse problems via
+# the .errors array in the JSON. Treat a non-empty .errors as a failure so
+# silent rule-config issues don't masquerade as a successful zero-finding scan.
+errors_in_json=$(jq '.errors | length' "$RESULTS_FILE" 2>/dev/null || printf '0')
+if ! printf '%s' "$errors_in_json" | grep -qE '^[0-9]+$'; then
+  errors_in_json=0
+fi
+if [ "$errors_in_json" -gt 0 ]; then
+  echo "::error::Semgrep reported $errors_in_json error(s) in results JSON:"
+  jq -r '.errors[]? | "\(.type // "error"): \(.message // "(no message)")"' "$RESULTS_FILE" >&2 || true
   exit 1
 fi
 

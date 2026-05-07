@@ -31,12 +31,6 @@ else
   SHORT_SHA='unknown'
 fi
 
-PR_NUMBER_RAW="${PR_NUMBER:-}"
-if ! printf '%s' "$PR_NUMBER_RAW" | grep -qE '^[0-9]+$'; then
-  echo "::error::PR_NUMBER must be a positive integer, got: '$PR_NUMBER_RAW'"
-  exit 1
-fi
-
 SCAN_RESULT="$(sanitise "${SCAN_RESULT:-skipped}")"
 ERRORS="$(valid_int_or_zero "${ERRORS:-0}")"
 WARNINGS="$(valid_int_or_zero "${WARNINGS:-0}")"
@@ -45,12 +39,8 @@ TOTAL="$(valid_int_or_zero "${TOTAL:-0}")"
 
 OUT_DIR="$RUNNER_TEMP/pr-comment-semgrep"
 BODY_FILE="$OUT_DIR/body.md"
-PR_FILE="$OUT_DIR/pr-number.txt"
-MARKER_FILE="$OUT_DIR/marker.txt"
 
 mkdir -p "$OUT_DIR"
-printf '%s\n' "$PR_NUMBER_RAW" > "$PR_FILE"
-printf '%s\n' '## Semgrep Scan Results' > "$MARKER_FILE"
 
 {
   printf '## Semgrep Scan Results\n\n'

@@ -11,7 +11,7 @@ set -euo pipefail
 # Validate that the image reference matches a known-safe shape: registry/path:tag.
 # This is defence-in-depth — the action input default is hard-coded — but the
 # input is overridable, so reject anything that isn't a plain image:tag.
-if ! printf '%s' "$TRUFFLEHOG_IMAGE" | grep -qE '^[a-zA-Z0-9._/-]+:[A-Za-z0-9._-]+(@sha256:[a-f0-9]{64})?$'; then
+if ! printf '%s' "$TRUFFLEHOG_IMAGE" | grep -qE '^[A-Za-z0-9][A-Za-z0-9._/-]*:[A-Za-z0-9._-]+@sha256:[a-f0-9]{64}$'; then
   echo "::error::Refusing to use TRUFFLEHOG_IMAGE='$TRUFFLEHOG_IMAGE' — not a plain image:tag reference."
   exit 1
 fi
@@ -35,8 +35,13 @@ git archive HEAD | tar -x -C "$SCAN_ROOT"
 } > "$EXCLUDE_FILE"
 
 # Run TruffleHog inside Docker. Mount source read-only; mount exclude file
-# read-only. We deliberately swallow non-zero exit (TruffleHog exits non-zero
-# when findings exist) and parse the JSON to compute findings count ourselves.
+# read-only. We must distinguish three cases:
+#   - exit 0   : tool ran fine, parse JSON for findings
+#   - exit 183 : tool ran fine, --fail mode found secrets (treated like 0)
+#   - other    : infrastructure failure (image pull, TruffleHog crash, …) —
+#                MUST fail the job so a broken scan can't masquerade as 0
+#                findings.
+docker_log="$WORK_DIR/trufflehog.log"
 set +e
 docker run --rm \
   -v "$SCAN_ROOT:/repo:ro" \
@@ -46,18 +51,32 @@ docker run --rm \
   --json \
   --no-update \
   --exclude-paths=/exclude-paths.txt \
-  > "$RESULTS_FILE" 2>/dev/null
+  > "$RESULTS_FILE" 2> "$docker_log"
+exit_code=$?
 set -e
+case "$exit_code" in
+  0|183) ;;
+  *)
+    echo "::error::TruffleHog exited with code $exit_code (likely infrastructure error). Logs:"
+    cat -- "$docker_log" >&2
+    exit 1
+    ;;
+esac
 
-# TruffleHog emits one JSON object per line. Count non-empty lines that parse
-# as JSON objects (jq -s 'length' on the whole stream gives a robust count).
+# TruffleHog emits one JSON object per line. Count via jq -s. A parse failure
+# here means the scanner produced garbage — fail the job, don't silently zero.
 findings_count=0
 if [ -s "$RESULTS_FILE" ]; then
-  findings_count=$(jq -s 'length' "$RESULTS_FILE" 2>/dev/null || printf '0')
+  if ! findings_count=$(jq -s 'length' "$RESULTS_FILE" 2>"$WORK_DIR/jq-err.log"); then
+    echo '::error::TruffleHog output is not valid JSON-lines:'
+    cat -- "$WORK_DIR/jq-err.log" >&2
+    exit 1
+  fi
 fi
 
 if ! printf '%s' "$findings_count" | grep -qE '^[0-9]+$'; then
-  findings_count=0
+  echo "::error::TruffleHog findings count not an integer: '$findings_count'"
+  exit 1
 fi
 
 has_findings=false

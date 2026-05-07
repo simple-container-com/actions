@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Test fixtures for .semgrep/rules/shell.yml
+# Test fixtures for semgrep-scan/rules/shell.yml.
 #
 # Lines marked `# ruleid: <id>` MUST match that rule.
 # Lines marked `# ok: <id>` MUST NOT match that rule.
@@ -17,11 +17,23 @@ eval "$user_input"
 # ruleid: shell-eval-usage
 eval "VAR=$value"
 
+# ruleid: shell-eval-usage
+command eval "$x"
+
+# ruleid: shell-eval-usage
+builtin eval "$y"
+
+# ruleid: shell-eval-usage
+true; eval "$z"
+
 # ok: shell-eval-usage
 printf -v VAR '%s' "$value"
 
 # ok: shell-eval-usage
 declare -n ref="$var"; ref="$value"
+
+# ok: shell-eval-usage
+echo "evaluation complete"
 
 # --------------------------------------------------------------------
 # shell-curl-pipe-to-shell
@@ -35,6 +47,18 @@ curl -fsS https://example.com/install.sh | bash
 
 # ruleid: shell-curl-pipe-to-shell
 wget -qO- https://example.com/install.sh | sh
+
+# ruleid: shell-curl-pipe-to-shell
+curl -sSL https://example.com/install.sh | sudo bash
+
+# ruleid: shell-curl-pipe-to-shell
+curl -fsS https://example.com/install.sh | bash -s --
+
+# ruleid: shell-curl-pipe-to-shell
+bash <(curl -fsS https://example.com/setup.sh)
+
+# ruleid: shell-curl-pipe-to-shell
+sh -c "$(curl -fsS https://example.com/setup.sh)"
 
 # ok: shell-curl-pipe-to-shell
 curl -O https://example.com/file.tar.gz
@@ -53,6 +77,18 @@ rm -rf /
 # ruleid: shell-rm-rf-root
 rm -rf /*
 
+# ruleid: shell-rm-rf-root
+rm -fr /
+
+# ruleid: shell-rm-rf-root
+rm -rf -- /
+
+# ruleid: shell-rm-rf-root
+rm -rf "${TARGET}/"
+
+# ruleid: shell-rm-rf-root
+rm -rf "$TARGET"/*
+
 # ok: shell-rm-rf-root
 rm -rf "$RUNNER_TEMP/work"
 
@@ -69,6 +105,15 @@ source $UNTRUSTED_PATH
 # ruleid: shell-source-of-variable-path
 . ${SOMETHING}/lib.sh
 
+# ruleid: shell-source-of-variable-path
+source "$VAR"
+
+# ruleid: shell-source-of-variable-path
+. "${DIR}/lib.sh"
+
+# ruleid: shell-source-of-variable-path
+source -- "$file"
+
 # ok: shell-source-of-variable-path
 source ./scripts/lib.sh
 
@@ -82,5 +127,17 @@ source ./scripts/lib.sh
 # ruleid: shell-cat-without-double-dash
 cat "$FILE"
 
+# ruleid: shell-cat-without-double-dash
+cat $FILE
+
 # ok: shell-cat-without-double-dash
 cat -- "$FILE"
+
+# ok: shell-cat-without-double-dash
+cat "$GITHUB_OUTPUT"
+
+# ok: shell-cat-without-double-dash
+cat "$GITHUB_STEP_SUMMARY"
+
+# ok: shell-cat-without-double-dash
+cat "$RUNNER_TEMP/log"
