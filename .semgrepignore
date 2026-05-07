@@ -1,0 +1,13 @@
+# Semgrep ignore — applied by self-semgrep.yml when it scans this repo.
+#
+# `semgrep-self-test.yml` already runs the rule unit tests against
+# fixtures under `semgrep-scan/tests/`; those fixtures are intentionally
+# rule-violating (curl|sh, eval, rm -rf /, script-injection patterns)
+# so the rule-validation harness can assert positives. They should NOT
+# be reported as findings by the *full-repo* self-scan.
+#
+# Same reasoning for `semgrep-scan/rules/` itself: the rule files quote
+# the very patterns they detect (e.g. `pattern-regex:` lines containing
+# `curl|sh`), so naive scanning matches them too.
+semgrep-scan/tests/
+semgrep-scan/rules/

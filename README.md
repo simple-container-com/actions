@@ -195,7 +195,8 @@ These rules are enforced by [`lint.yml`](.github/workflows/lint.yml), [`semgrep-
 - This actions repo is **public**. Any path pattern listed in a `secret-scan-extra-excludes` value (anywhere in the org) is a hint to attackers about which paths the scanner skips. Default to fixing the source instead.
 - Universal detector exclude: `--exclude-detectors=FormBucket`. That detector matches generic Go SDK symbols (`sdk.Bool`, `sdk.BoolPtr`) with extreme FP rate; no SC repo legitimately uses formbucket.com APIs.
 - Source-level fixes (preferred): replace placeholder credentials with syntax that defeats the detector regex AND keeps the docs/tests valid. Avoid preserving provider-specific token prefixes (`ghp_`, `sk-`, `xoxb-`), JWT-like multi-part shapes, full PEM armor, or parseable URI userinfo with realistic credential slots. TruffleHog also scans **decoded base64**, so an "innocuous" base64 fixture can still trigger after decoding.
-  - URIs: `mongodb+srv://user:pass@host` → `mongodb+srv://<USER>:<PASS>@<host>` (angle brackets break the alphanumeric password match)
+  - URIs: `mongodb+srv://user:pass@host` → `mongodb+srv://<USER>:<PASS>@<host>` (angle brackets break the alphanumeric password match) <!-- trufflehog:ignore -->
+
   - GCP service-account emails: `name@project.iam.gserviceaccount.com` → `<service-account>@<project>.iam.gserviceaccount.com`
   - Random-looking tokens (Cloudflare / Mailgun / Gitlab): replace value with `<your-token>` literal
 - Inline ignore (good for tests with comment syntax): `# trufflehog:ignore` (Python/YAML/shell) or `// trufflehog:ignore` (Go/JS/etc.) at the end of the line tells TruffleHog to skip that line. Confirmed empirically with TruffleHog 3.95. Best fit for test fixtures that need format-preserving values but where a comment is welcome.
