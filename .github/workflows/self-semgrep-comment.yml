@@ -1,0 +1,21 @@
+name: Semgrep Comment
+
+# Privileged side of the self-semgrep split. Triggers via `workflow_run`
+# on the `Semgrep` workflow above. Never reads PR code — only the
+# comment artifact uploaded by the upstream scan.
+on:
+  workflow_run:
+    workflows: ["Semgrep"]
+    types: [completed]
+
+permissions:
+  pull-requests: write
+  actions: read
+
+jobs:
+  comment:
+    if: github.event.workflow_run.event == 'pull_request'
+    uses: simple-container-com/actions/.github/workflows/semgrep-comment.yml@main
+    permissions:
+      pull-requests: write
+      actions: read

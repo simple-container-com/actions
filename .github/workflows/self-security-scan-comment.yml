@@ -1,0 +1,22 @@
+name: Security Scan Comment
+
+# Privileged side of the self-security-scan split. Triggers via
+# `workflow_run` on the `Security Scan` workflow above and runs in
+# base-repo context with `pull-requests: write`. Never reads PR code —
+# only the comment artifact uploaded by the upstream scan.
+on:
+  workflow_run:
+    workflows: ["Security Scan"]
+    types: [completed]
+
+permissions:
+  pull-requests: write
+  actions: read
+
+jobs:
+  comment:
+    if: github.event.workflow_run.event == 'pull_request'
+    uses: simple-container-com/actions/.github/workflows/security-scan-comment.yml@main
+    permissions:
+      pull-requests: write
+      actions: read

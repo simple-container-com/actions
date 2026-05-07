@@ -1,0 +1,29 @@
+name: Security Scan
+
+# Self-consume the security-scan reusable workflow on this repo's own
+# code — same shape as the consumer wrappers in api/, forge-action/ etc.
+# Keeps the scan path exercised on every change to the actions repo so
+# that a regression in the reusable workflow surfaces here first.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    uses: simple-container-com/actions/.github/workflows/security-scan.yml@main
+    permissions:
+      contents: read
+    with:
+      # No source-tree dep manifests in this repo (no go.mod / package.json /
+      # Cargo.toml / requirements.txt). Syft would produce a near-empty SBOM,
+      # and Trivy/Grype against it adds nothing over the existing Dependabot
+      # coverage of `github-actions` and `docker` ecosystems pinned in
+      # `versions/Dockerfile`. Keep TruffleHog (secret scan) — it doesn't
+      # need a manifest to find a token in shell scripts or YAML.
+      enable-sbom: false
