@@ -1,0 +1,23 @@
+name: Semgrep
+
+# Self-consume the semgrep reusable workflow on this repo's own code,
+# using the central rules under semgrep-scan/rules/. Different from
+# semgrep-self-test.yml — that one runs the rule unit tests
+# (positives/negatives) against fixtures; this one runs the rules
+# against the actions repo itself and reports findings as a normal
+# scan.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    uses: simple-container-com/actions/.github/workflows/semgrep.yml@main
+    permissions:
+      contents: read

@@ -1,0 +1,21 @@
+name: Security Scan
+
+# Self-consume the security-scan reusable workflow on this repo's own
+# code — same shape as the consumer wrappers in api/, forge-action/ etc.
+# Keeps the scan path exercised on every change to the actions repo so
+# that a regression in the reusable workflow surfaces here first.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    uses: simple-container-com/actions/.github/workflows/security-scan.yml@main
+    permissions:
+      contents: read
