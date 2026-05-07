@@ -16,10 +16,7 @@ permissions:
 
 jobs:
   security:
-    # Pinned to this PR's branch while open — the `enable-sbom` input is
-    # introduced on this same PR and isn't yet on @main. Bump to @main
-    # after merge.
-    uses: simple-container-com/actions/.github/workflows/security-scan.yml@feat/self-security-scan
+    uses: simple-container-com/actions/.github/workflows/security-scan.yml@main
     permissions:
       contents: read
     with:
