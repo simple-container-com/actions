@@ -25,16 +25,23 @@ echo "::add-mask::$TG_TOKEN"
 # Telegram chat IDs are signed integers. Bot tokens have the shape
 # `<bot_id>:<35+ url-safe chars>`. Hostnames are restricted to a known
 # alphabet; anything weirder is a sign of either a typo or injection.
-if ! printf '%s' "$TG_CHAT" | LC_ALL=C grep -qE '^-?[0-9]+$'; then
-  echo "::error::chat-id must be a signed integer, got: '$TG_CHAT'"
+#
+# `grep -z` treats the input as a single null-terminated record so that
+# `^...$` anchors apply to the WHOLE value, not per-line. Without `-z`,
+# a multi-line input (e.g. `https://x\nextra-content`) would pass the
+# regex on the first line while still propagating the trailing junk
+# into the request — exactly the kind of split-line trick the
+# validation is meant to catch.
+if ! printf '%s' "$TG_CHAT" | LC_ALL=C grep -qzE '^-?[0-9]+$'; then
+  echo "::error::chat-id must be a single-line signed integer, got: '$TG_CHAT'"
   exit 1
 fi
-if ! printf '%s' "$TG_TOKEN" | LC_ALL=C grep -qE '^[0-9]+:[A-Za-z0-9_-]+$'; then
+if ! printf '%s' "$TG_TOKEN" | LC_ALL=C grep -qzE '^[0-9]+:[A-Za-z0-9_-]+$'; then
   echo '::error::token does not match the Telegram bot-token shape <bot_id>:<auth>.'
   exit 1
 fi
-if ! printf '%s' "$TG_HOST" | LC_ALL=C grep -qE '^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$'; then
-  echo "::error::api-host must be a plain hostname, got: '$TG_HOST'"
+if ! printf '%s' "$TG_HOST" | LC_ALL=C grep -qzE '^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$'; then
+  echo "::error::api-host must be a single-line hostname, got: '$TG_HOST'"
   exit 1
 fi
 # When a link is requested, restrict its scheme to https://. Telegram does
@@ -42,8 +49,8 @@ fi
 # front prevents a consumer that interpolates user-controlled values into
 # `link-url` from turning the link into something nasty.
 if [ -n "$TG_LINK_URL" ]; then
-  if ! printf '%s' "$TG_LINK_URL" | LC_ALL=C grep -qE '^https://[A-Za-z0-9._~:/?#@!$&'\''()*+,;=%-]+$'; then
-    echo "::error::link-url must be an https:// URL, got: '$TG_LINK_URL'"
+  if ! printf '%s' "$TG_LINK_URL" | LC_ALL=C grep -qzE '^https://[A-Za-z0-9._~:/?#@!$&'\''()*+,;=%-]+$'; then
+    echo "::error::link-url must be a single-line https:// URL, got: '$TG_LINK_URL'"
     exit 1
   fi
 fi
