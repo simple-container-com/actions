@@ -1,0 +1,154 @@
+name: Security Scan (reusable)
+
+# Reusable security-scan workflow for the simple-container-com org.
+#
+# Designed for use in PUBLIC consumer repos that may receive PRs from forks.
+# This workflow runs untrusted PR code only as inert input to scanners
+# (TruffleHog, Syft, Trivy, Grype) — it never builds, installs, or executes it.
+# It runs under `pull_request` (not `pull_request_target`) so fork PRs receive
+# a read-only token and no access to org secrets.
+#
+# Comment posting is split into security-scan-comment.yml, triggered via
+# workflow_run, so privileged token use never touches PR code.
+#
+# All non-trivial logic lives in composite actions colocated in this repo.
+
+on:
+  workflow_call:
+    inputs:
+      product-name:
+        description: 'Product name for reporting. Defaults to calling repository name.'
+        required: false
+        default: ''
+        type: string
+      fail-on-secrets:
+        description: 'Fail the workflow if secrets are detected by TruffleHog'
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: security-scan-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  secret-scan:
+    name: Secret Scan (TruffleHog)
+    runs-on: ubuntu-24.04
+    outputs:
+      findings-count: ${{ steps.scan.outputs.findings-count }}
+      has-findings: ${{ steps.scan.outputs.has-findings }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: TruffleHog scan
+        id: scan
+        uses: simple-container-com/actions/trufflehog-scan@main
+
+  sbom-scan:
+    name: SBOM + Dependency Scan
+    runs-on: ubuntu-24.04
+    outputs:
+      component-count: ${{ steps.sbom.outputs.component-count }}
+      trivy-total: ${{ steps.scan.outputs.trivy-total }}
+      trivy-critical: ${{ steps.scan.outputs.trivy-critical }}
+      trivy-high: ${{ steps.scan.outputs.trivy-high }}
+      trivy-medium: ${{ steps.scan.outputs.trivy-medium }}
+      trivy-low: ${{ steps.scan.outputs.trivy-low }}
+      trivy-unknown: ${{ steps.scan.outputs.trivy-unknown }}
+      grype-total: ${{ steps.scan.outputs.grype-total }}
+      grype-critical: ${{ steps.scan.outputs.grype-critical }}
+      grype-high: ${{ steps.scan.outputs.grype-high }}
+      grype-medium: ${{ steps.scan.outputs.grype-medium }}
+      grype-low: ${{ steps.scan.outputs.grype-low }}
+      grype-unknown: ${{ steps.scan.outputs.grype-unknown }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: SBOM generate
+        id: sbom
+        uses: simple-container-com/actions/sbom-generate@main
+
+      - name: SBOM vulnerability scan
+        id: scan
+        uses: simple-container-com/actions/sbom-scan@main
+        with:
+          sbom-file: ${{ steps.sbom.outputs.sbom-file }}
+
+  build-comment:
+    name: Build PR Comment Body
+    runs-on: ubuntu-24.04
+    needs: [secret-scan, sbom-scan]
+    if: always() && github.event_name == 'pull_request'
+
+    steps:
+      - name: Build comment body
+        uses: simple-container-com/actions/build-pr-comment@main
+        with:
+          product-name: ${{ inputs.product-name }}
+          secret-scan-result: ${{ needs.secret-scan.result }}
+          secret-has-findings: ${{ needs.secret-scan.outputs.has-findings }}
+          secret-findings-count: ${{ needs.secret-scan.outputs.findings-count }}
+          sbom-result: ${{ needs.sbom-scan.result }}
+          sbom-component-count: ${{ needs.sbom-scan.outputs.component-count }}
+          trivy-critical: ${{ needs.sbom-scan.outputs.trivy-critical }}
+          trivy-high: ${{ needs.sbom-scan.outputs.trivy-high }}
+          trivy-total: ${{ needs.sbom-scan.outputs.trivy-total }}
+          grype-critical: ${{ needs.sbom-scan.outputs.grype-critical }}
+          grype-high: ${{ needs.sbom-scan.outputs.grype-high }}
+          grype-total: ${{ needs.sbom-scan.outputs.grype-total }}
+
+  status:
+    name: Security Status
+    runs-on: ubuntu-24.04
+    needs: [secret-scan, sbom-scan]
+    if: always()
+
+    steps:
+      - name: Evaluate security results
+        env:
+          FAIL_ON_SECRETS: ${{ inputs.fail-on-secrets }}
+          SECRET_RESULT: ${{ needs.secret-scan.result }}
+          SECRET_HAS_FINDINGS: ${{ needs.secret-scan.outputs.has-findings }}
+          SECRET_FINDINGS_COUNT: ${{ needs.secret-scan.outputs.findings-count }}
+          SBOM_RESULT: ${{ needs.sbom-scan.result }}
+        run: |
+          set -euo pipefail
+          failed='false'
+
+          # Required scan jobs must explicitly succeed. `cancelled` and
+          # `skipped` results count as failure too — otherwise a fork PR
+          # that times out / is cancelled mid-flight could merge without
+          # ever being scanned.
+          if [ "${SECRET_RESULT}" != 'success' ]; then
+            echo "::error::Secret scan job did not succeed (result=${SECRET_RESULT})."
+            failed='true'
+          fi
+          if [ "${SBOM_RESULT}" != 'success' ]; then
+            echo "::error::SBOM/dependency scan job did not succeed (result=${SBOM_RESULT})."
+            failed='true'
+          fi
+
+          if [ "${FAIL_ON_SECRETS}" = 'true' ] && [ "${SECRET_HAS_FINDINGS}" = 'true' ]; then
+            echo "::error::TruffleHog detected ${SECRET_FINDINGS_COUNT} potential secret(s). Remove them before merging."
+            failed='true'
+          fi
+
+          if [ "${failed}" = 'true' ]; then
+            exit 1
+          fi
+
+          echo 'All security checks passed.'

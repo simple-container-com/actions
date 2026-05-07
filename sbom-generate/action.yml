@@ -1,0 +1,34 @@
+name: 'SBOM Generate (Syft)'
+description: 'Generate a CycloneDX SBOM from the working tree using a pinned Syft Docker image.'
+
+inputs:
+  syft-image:
+    description: 'Pinned Syft Docker image reference. Override only to bump the version after security review.'
+    required: false
+    default: 'ghcr.io/anchore/syft:v1.44.0@sha256:86fde6445b483d902fe011dd9f68c4987dd94e07da1e9edc004e3c2422650de6'
+
+outputs:
+  sbom-file:
+    description: 'Absolute path to the generated CycloneDX JSON SBOM.'
+    value: ${{ steps.run.outputs.sbom-file }}
+  component-count:
+    description: 'Number of components in the SBOM.'
+    value: ${{ steps.run.outputs.component-count }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Generate SBOM
+      id: run
+      shell: bash
+      env:
+        SYFT_IMAGE: ${{ inputs.syft-image }}
+      run: ${{ github.action_path }}/generate.sh
+
+    - name: Upload SBOM
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      with:
+        name: sbom-cyclonedx
+        path: ${{ steps.run.outputs.sbom-file }}
+        retention-days: 30
+        if-no-files-found: error

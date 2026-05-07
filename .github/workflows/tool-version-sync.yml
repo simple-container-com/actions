@@ -1,0 +1,29 @@
+name: Tool Version Sync
+
+# Asserts that the image pins in `versions/Dockerfile` match the pins used
+# in composite-action `default:` values and shell scripts. Fails the build
+# if they drift — typically when Dependabot has bumped the Dockerfile but
+# the consumer files haven't been propagated yet. Fix with:
+#   tools/sync-tool-versions.sh --apply
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Versions in sync
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run sync check
+        run: tools/sync-tool-versions.sh --check

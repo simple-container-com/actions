@@ -1,0 +1,151 @@
+name: Semgrep (reusable)
+
+# Reusable Semgrep workflow for the simple-container-com org.
+#
+# Designed for use in PUBLIC consumer repos. Runs on `pull_request` (read-only
+# token, no secrets) so it's safe for fork PRs. Comment posting is split into
+# semgrep-comment.yml, triggered via workflow_run.
+#
+# Rules: ships the SC custom ruleset (semgrep-scan/rules/) and optionally
+# merges in a consumer-supplied rules path and/or Semgrep registry packs.
+
+on:
+  workflow_call:
+    inputs:
+      product-name:
+        description: 'Product name for reporting. Defaults to calling repository name.'
+        required: false
+        default: ''
+        type: string
+      consumer-rules:
+        description: 'Relative path inside the consumer repo to additional Semgrep rules (e.g. ".semgrep/rules"). Empty = SC rules only.'
+        required: false
+        default: ''
+        type: string
+      registry-packs:
+        description: 'Comma-separated Semgrep registry pack identifiers (e.g. "p/security-audit"). Empty by default.'
+        required: false
+        default: ''
+        type: string
+      fail-on-severity:
+        description: 'Lowest severity that fails the workflow (ERROR / WARNING / INFO).'
+        required: false
+        default: 'ERROR'
+        type: string
+
+concurrency:
+  group: semgrep-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep-scan:
+    name: Semgrep
+    runs-on: ubuntu-24.04
+    outputs:
+      errors: ${{ steps.scan.outputs.errors }}
+      warnings: ${{ steps.scan.outputs.warnings }}
+      infos: ${{ steps.scan.outputs.infos }}
+      total: ${{ steps.scan.outputs.total }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run Semgrep
+        id: scan
+        uses: simple-container-com/actions/semgrep-scan@main
+        with:
+          consumer-rules: ${{ inputs.consumer-rules }}
+          registry-packs: ${{ inputs.registry-packs }}
+          fail-on-severity: ${{ inputs.fail-on-severity }}
+
+  build-comment:
+    name: Build Semgrep PR Comment
+    runs-on: ubuntu-24.04
+    needs: [semgrep-scan]
+    if: always() && github.event_name == 'pull_request'
+
+    steps:
+      - name: Build comment body
+        uses: simple-container-com/actions/build-semgrep-comment@main
+        with:
+          product-name: ${{ inputs.product-name }}
+          scan-result: ${{ needs.semgrep-scan.result }}
+          errors: ${{ needs.semgrep-scan.outputs.errors }}
+          warnings: ${{ needs.semgrep-scan.outputs.warnings }}
+          infos: ${{ needs.semgrep-scan.outputs.infos }}
+          total: ${{ needs.semgrep-scan.outputs.total }}
+
+  status:
+    name: Semgrep Status
+    runs-on: ubuntu-24.04
+    needs: [semgrep-scan]
+    if: always()
+
+    steps:
+      - name: Evaluate Semgrep results
+        env:
+          FAIL_ON_SEVERITY: ${{ inputs.fail-on-severity }}
+          SCAN_RESULT: ${{ needs.semgrep-scan.result }}
+          ERRORS: ${{ needs.semgrep-scan.outputs.errors }}
+          WARNINGS: ${{ needs.semgrep-scan.outputs.warnings }}
+          INFOS: ${{ needs.semgrep-scan.outputs.infos }}
+        run: |
+          set -euo pipefail
+          failed='false'
+
+          # Required: Semgrep scan must explicitly succeed. `cancelled` and
+          # `skipped` count as failure — otherwise a fork PR that's
+          # cancelled mid-flight could merge without ever being scanned.
+          if [ "${SCAN_RESULT}" != 'success' ]; then
+            echo "::error::Semgrep scan job did not succeed (result=${SCAN_RESULT})."
+            exit 1
+          fi
+
+          # Default missing counts to 0 (job may have been skipped).
+          errors="${ERRORS:-0}"
+          warnings="${WARNINGS:-0}"
+          infos="${INFOS:-0}"
+          for v in errors warnings infos; do
+            val="${!v}"
+            if ! printf '%s' "$val" | grep -qE '^[0-9]+$'; then
+              printf -v "$v" '%s' '0'
+            fi
+          done
+
+          case "${FAIL_ON_SEVERITY}" in
+            ERROR)
+              if [ "$errors" -gt 0 ]; then
+                echo "::error::Semgrep found $errors ERROR-severity finding(s)."
+                failed='true'
+              fi
+              ;;
+            WARNING)
+              if [ "$errors" -gt 0 ] || [ "$warnings" -gt 0 ]; then
+                echo "::error::Semgrep found $errors error(s) and $warnings warning(s)."
+                failed='true'
+              fi
+              ;;
+            INFO)
+              total=$((errors + warnings + infos))
+              if [ "$total" -gt 0 ]; then
+                echo "::error::Semgrep found $total finding(s)."
+                failed='true'
+              fi
+              ;;
+            *)
+              echo "::error::Unknown FAIL_ON_SEVERITY='${FAIL_ON_SEVERITY}'."
+              failed='true'
+              ;;
+          esac
+
+          if [ "$failed" = 'true' ]; then
+            exit 1
+          fi
+          echo 'Semgrep gate passed.'

@@ -1,0 +1,50 @@
+version: 2
+
+# Two ecosystems track this repo:
+#
+# 1. github-actions: bumps `actions/*` SHAs in our reusable workflows and
+#    composite actions.
+#
+# 2. docker: bumps the FROM lines in `versions/Dockerfile`, which is the
+#    single catalogue of every tool image we run via `docker run`.
+#    Dependabot does NOT parse `image:tag@sha256:...` strings inside
+#    shell scripts or `action.yml` `default:` values, so the Dockerfile
+#    is the only thing it sees. When Dependabot bumps a FROM, the
+#    `Tool Version Sync` workflow fails until a human runs
+#    `tools/sync-tool-versions.sh --apply` on the PR branch and pushes
+#    the propagated changes. `rebase-strategy: disabled` keeps that
+#    follow-up commit from being silently rebased away.
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: deps
+      include: scope
+    groups:
+      actions-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: docker
+    directory: /versions
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    rebase-strategy: disabled
+    labels:
+      - dependencies
+      - docker
+    commit-message:
+      prefix: deps
+      include: scope

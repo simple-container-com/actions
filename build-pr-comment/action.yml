@@ -1,0 +1,74 @@
+name: 'Build PR Comment Body'
+description: 'Render the security-scan PR comment markdown into an artifact-ready file. Does NOT post the comment.'
+
+inputs:
+  product-name:
+    description: 'Product name shown in the comment header. Defaults to the calling repository name.'
+    required: false
+    default: ''
+  secret-scan-result:
+    description: 'GitHub Actions result of the secret-scan job (success / failure / cancelled / skipped).'
+    required: true
+  secret-has-findings:
+    description: 'true / false from the trufflehog-scan output.'
+    required: false
+    default: 'false'
+  secret-findings-count:
+    description: 'Number of TruffleHog findings.'
+    required: false
+    default: '0'
+  sbom-result:
+    description: 'GitHub Actions result of the sbom-scan job.'
+    required: true
+  sbom-component-count:
+    description: 'Number of components in the SBOM.'
+    required: false
+    default: '0'
+  trivy-critical:
+    required: false
+    default: '0'
+  trivy-high:
+    required: false
+    default: '0'
+  trivy-total:
+    required: false
+    default: '0'
+  grype-critical:
+    required: false
+    default: '0'
+  grype-high:
+    required: false
+    default: '0'
+  grype-total:
+    required: false
+    default: '0'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Render comment body
+      shell: bash
+      env:
+        PRODUCT_NAME_INPUT: ${{ inputs.product-name }}
+        DEFAULT_PRODUCT_NAME: ${{ github.event.repository.name }}
+        GIT_SHA: ${{ github.sha }}
+        SECRET_RESULT: ${{ inputs.secret-scan-result }}
+        SECRET_HAS_FINDINGS: ${{ inputs.secret-has-findings }}
+        SECRET_FINDINGS_COUNT: ${{ inputs.secret-findings-count }}
+        SBOM_RESULT: ${{ inputs.sbom-result }}
+        SBOM_COMPONENT_COUNT: ${{ inputs.sbom-component-count }}
+        T_CRITICAL: ${{ inputs.trivy-critical }}
+        T_HIGH: ${{ inputs.trivy-high }}
+        T_TOTAL: ${{ inputs.trivy-total }}
+        G_CRITICAL: ${{ inputs.grype-critical }}
+        G_HIGH: ${{ inputs.grype-high }}
+        G_TOTAL: ${{ inputs.grype-total }}
+      run: ${{ github.action_path }}/build.sh
+
+    - name: Upload PR comment artifact
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      with:
+        name: pr-comment-body
+        path: ${{ runner.temp }}/pr-comment
+        retention-days: 1
+        if-no-files-found: error

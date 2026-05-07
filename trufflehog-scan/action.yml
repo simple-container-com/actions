@@ -1,0 +1,44 @@
+name: 'TruffleHog Secret Scan'
+description: 'Filesystem secret scan using a pinned TruffleHog Docker image. Scans only tracked content at HEAD; excludes SC-encrypted secrets paths.'
+
+inputs:
+  trufflehog-image:
+    description: 'Pinned TruffleHog Docker image reference. Override only to bump the version after security review.'
+    required: false
+    default: 'ghcr.io/trufflesecurity/trufflehog:3.95.2@sha256:49d1c4fbbc580aac487ac7cb0517bb085826bd352d7578d62bb4c0c6b7205075'
+
+outputs:
+  findings-count:
+    description: 'Number of TruffleHog findings (verified + unverified).'
+    value: ${{ steps.run.outputs.findings-count }}
+  has-findings:
+    description: 'true if at least one finding was reported, otherwise false.'
+    value: ${{ steps.run.outputs.has-findings }}
+  results-file:
+    description: 'Absolute path to the JSON results file on the runner.'
+    value: ${{ steps.run.outputs.results-file }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Run TruffleHog
+      id: run
+      shell: bash
+      env:
+        TRUFFLEHOG_IMAGE: ${{ inputs.trufflehog-image }}
+      run: ${{ github.action_path }}/scan.sh
+
+    - name: Add step summary
+      shell: bash
+      env:
+        FINDINGS_COUNT: ${{ steps.run.outputs.findings-count }}
+        RESULTS_FILE: ${{ steps.run.outputs.results-file }}
+      run: ${{ github.action_path }}/summary.sh
+
+    - name: Upload TruffleHog results
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      with:
+        name: trufflehog-results
+        path: ${{ steps.run.outputs.results-file }}
+        retention-days: 7
+        if-no-files-found: ignore

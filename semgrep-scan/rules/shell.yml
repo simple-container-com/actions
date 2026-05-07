@@ -1,0 +1,123 @@
+rules:
+  # ====================================================================
+  # eval — almost always wrong in CI scripts. Catches `command eval` /
+  # `builtin eval` variants and `eval` after a pipe / semicolon.
+  # ====================================================================
+  - id: shell-eval-usage
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      Avoid `eval` in shell scripts. It executes its argument as code,
+      which is a command-injection risk if any input is attacker-controlled.
+      Prefer `printf -v VAR ...` for indirect assignment, `declare -n` for
+      name references, or rework the design so eval is unnecessary.
+    pattern-regex: '(^|[;&|]\s*)(command\s+|builtin\s+)?eval\b'
+    paths:
+      include:
+        - "**/*.sh"
+        - "**/*.bash"
+    metadata:
+      category: security
+      cwe: "CWE-78: OS Command Injection"
+      owasp: "A03:2021 - Injection"
+
+  # ====================================================================
+  # curl|sh installer pattern. Catches sh / bash / zsh, with optional
+  # sudo, `bash -s --`, and process-substitution `bash <(curl ...)` /
+  # `sh -c "$(curl ...)"`.
+  # ====================================================================
+  - id: shell-curl-pipe-to-shell
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      Piping `curl`/`wget` output directly into a shell is a supply-chain
+      risk. Pin a Docker image or release artifact, verify checksum/signature,
+      then execute. Never `curl | sh` from CI.
+    pattern-either:
+      # plain pipe: curl ... | (sudo )? (sh|bash|zsh|/bin/sh|/bin/bash) [args]
+      - pattern-regex: '(curl|wget)[^\n]+\|\s*(sudo\s+)?(/bin/)?(sh|bash|zsh)\b'
+      # process substitution: (sh|bash) <(curl ...)
+      - pattern-regex: '\b(sh|bash|zsh)\s+<\(\s*(curl|wget)\b'
+      # command substitution: (sh|bash) -c "$(curl ...)"
+      - pattern-regex: '\b(sh|bash|zsh)\s+-c\s+["'']?\$\(\s*(curl|wget)\b'
+    paths:
+      include:
+        - "**/*.sh"
+        - "**/*.bash"
+        - "**/*.yml"
+        - "**/*.yaml"
+    metadata:
+      category: security
+      cwe: "CWE-494: Download of Code Without Integrity Check"
+
+  # ====================================================================
+  # rm -rf / and similar. Catches `rm -rf /`, `rm -fr /`, `rm -rf -- /`,
+  # `rm -rf "${VAR}/"` (empty-var trailing-slash exploit), and trailing
+  # glob like `rm -rf "$X"/*`.
+  # ====================================================================
+  - id: shell-rm-rf-root
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      `rm -rf /` (or trailing-slash on a possibly-empty variable) can wipe
+      the runner. If you really need recursive delete, use a path you
+      constructed yourself (e.g. `"$RUNNER_TEMP/foo"`) and assert the
+      variable is non-empty first.
+    pattern-either:
+      # Literal root: `rm -rf /`, `rm -fr /`, `rm -rf -- /`, `rm -rf /*`.
+      - pattern-regex: '\brm\s+(-[rRf]+|--recursive|--force)+\s+(--\s+)?/(\s|$)'
+      - pattern-regex: '\brm\s+(-[rRf]+|--recursive|--force)+\s+/\*'
+      # Variable with trailing slash inside quotes: `rm -rf "${VAR}/"` /
+      # `rm -rf "$VAR/"`. Empty $VAR -> `rm -rf "/"`.
+      - pattern-regex: '\brm\s+(-[rRf]+|--recursive|--force)+\s+["'']\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/["'']'
+      # Variable followed by /* outside quotes: `rm -rf "$VAR"/*`.
+      - pattern-regex: '\brm\s+(-[rRf]+|--recursive|--force)+\s+["'']?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?["'']?/\*'
+    paths:
+      include:
+        - "**/*.sh"
+        - "**/*.bash"
+    metadata:
+      category: security
+
+  # ====================================================================
+  # Sourcing a path that's a variable reference — high risk of injection.
+  # Allows optional quotes, optional `--`, optional command prefixes.
+  # ====================================================================
+  - id: shell-source-of-variable-path
+    languages: [generic]
+    severity: WARNING
+    message: >-
+      Sourcing a file via a variable reference executes that file as bash.
+      If the variable can be influenced by attacker input, this is RCE.
+      Hard-code the path, or validate the variable matches an allowlist
+      before sourcing.
+    pattern-regex: '(^|[;&|]\s*)(source|\.)\s+(--\s+)?["'']?\$\{?[A-Za-z_]'
+    paths:
+      include:
+        - "**/*.sh"
+        - "**/*.bash"
+    metadata:
+      category: security
+
+  # ====================================================================
+  # Use cat -- "$file" so a leading dash in the filename can't smuggle a
+  # flag. INFO severity. Excludes well-known runner-owned variables which
+  # the attacker cannot influence the path of.
+  # ====================================================================
+  - id: shell-cat-without-double-dash
+    languages: [generic]
+    severity: INFO
+    message: >-
+      Use `cat -- "$FILE"` so a filename starting with `-` is not interpreted
+      as a flag. Same applies to `rm`, `chmod`, etc. Skipped for runner-owned
+      paths (GITHUB_OUTPUT, GITHUB_STEP_SUMMARY, RUNNER_TEMP, …).
+    patterns:
+      - pattern-regex: '\bcat\s+["'']?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?["'']?'
+      - pattern-not-regex: '\bcat\s+--\s+'
+      - pattern-not-regex: '\bcat\s+["'']?\$\{?(GITHUB_OUTPUT|GITHUB_STEP_SUMMARY|GITHUB_ENV|GITHUB_PATH|GITHUB_EVENT_PATH|RUNNER_TEMP|RUNNER_WORKSPACE|HOME)\}?["'']?'
+    paths:
+      include:
+        - "**/*.sh"
+        - "**/*.bash"
+    metadata:
+      category: best-practice

@@ -1,0 +1,225 @@
+# Test fixtures for semgrep-scan/rules/github-actions.yml.
+#
+# Lines marked `# ruleid: <id>` MUST match that rule.
+# Lines marked `# ok: <id>` MUST NOT match that rule.
+
+name: Fixtures
+
+# Multi-event trigger so the gha-pull-request-target-with-pr-head-checkout
+# regex (which keys off the literal `pull_request_target` token) has
+# something to anchor to.
+on: [pull_request, pull_request_target]
+
+jobs:
+  injection-cases:
+    runs-on: ubuntu-24.04
+    steps:
+      # ruleid: gha-script-injection-via-github-event
+      - run: echo "${{ github.event.pull_request.title }}"
+
+      # ruleid: gha-script-injection-via-attacker-controlled-context
+      - run: echo "${{ github.head_ref }}"
+
+      # ruleid: gha-script-injection-via-github-event
+      - run: |
+          echo "${{ github.event.issue.body }}"
+
+      # Multi-line `run:` followed by a *separate* step whose env: contains
+      # the dangerous interpolation must NOT match (Round-3 P1).
+      - run: |
+          echo safe
+      # ok: gha-script-injection-via-github-event
+      - env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          echo "$PR_TITLE"
+
+      # The next-step `name:` form (Round-1 P2 second-pass): a `run: |`
+      # body followed immediately by `- name: ${{ github.event.X }}` must
+      # NOT match, because the interpolation is on the next step's name,
+      # not inside this step's run block.
+      - run: |
+          echo also-safe
+      # ok: gha-script-injection-via-github-event
+      - name: Step using ${{ github.event.pull_request.title }}
+        run: echo "trusted by action input"
+
+      # ruleid: gha-script-injection-via-attacker-controlled-context
+      - run: echo "${{ github.event.workflow_run.head_branch }}"
+
+      # ruleid: gha-script-injection-via-attacker-controlled-context
+      - run: echo "${{ inputs.user_string }}"
+
+  pinning-cases:
+    runs-on: ubuntu-24.04
+    steps:
+      # ruleid: gha-unpinned-third-party-action
+      - uses: tj-actions/changed-files@v40
+
+      # ruleid: gha-unpinned-third-party-action
+      - uses: rhysd/actionlint@1.7.4
+
+      # ruleid: gha-unpinned-third-party-action
+      - uses: "tj-actions/changed-files@v40"
+
+      # ruleid: gha-unpinned-third-party-action
+      - uses: 'rhysd/actionlint@1.7.4'
+
+      # ok: gha-unpinned-third-party-action
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      # ok: gha-unpinned-third-party-action
+      - uses: simple-container-com/actions/trufflehog-scan@main
+
+      # ruleid: gha-unpinned-first-party-action
+      - uses: actions/checkout@v4
+
+      # ruleid: gha-unpinned-first-party-action
+      - uses: "actions/checkout@v4"
+
+      # ok: gha-unpinned-first-party-action
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+  checkout-cases:
+    runs-on: ubuntu-24.04
+    steps:
+      # ruleid: gha-checkout-persist-credentials-true
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: true
+
+      # ok: gha-checkout-persist-credentials-true
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      # An action OTHER than checkout that happens to take a similarly-named
+      # input must NOT trip the rule (Round-3 P1 — was previously unscoped).
+      # ok: gha-checkout-persist-credentials-true
+      - uses: someorg/cred-helper@9999999999999999999999999999999999999999
+        with:
+          persist-credentials: true
+
+      # Round-1 P2 second-pass: a safe `actions/checkout` (persist-
+      # credentials: false) must NOT trip the rule even if a SUBSEQUENT
+      # unrelated action's `with:` later has `persist-credentials: true`.
+      # The window must stop at the next step start.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      # ok: gha-checkout-persist-credentials-true
+      - uses: someorg/cred-helper@9999999999999999999999999999999999999999
+        with:
+          persist-credentials: true
+
+  secret-echo-cases:
+    runs-on: ubuntu-24.04
+    steps:
+      # ruleid: gha-secret-echoed
+      - run: echo "${{ secrets.MY_TOKEN }}"
+
+      # ruleid: gha-secret-echoed
+      - run: printf '%s' "${{ secrets.MY_TOKEN }}"
+
+      # ruleid: gha-secret-echoed
+      - run: tee out.txt <<< "${{ secrets.MY_TOKEN }}"
+
+      # ok: gha-secret-echoed
+      - env:
+          MY_TOKEN: ${{ secrets.MY_TOKEN }}
+        run: |
+          curl -H "Authorization: bearer $MY_TOKEN" https://api.example.com
+
+  pwn-request-cases:
+    runs-on: ubuntu-24.04
+    steps:
+      # NB: `on:` of this whole file is `pull_request`, not `_target`. The
+      # rule is a regex over the whole file so the dummy fragment below is
+      # enough to exercise it. Real prevention is at the `on:` level.
+      # ruleid: gha-pull-request-target-with-pr-head-checkout
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+  cache-cases:
+    runs-on: ubuntu-24.04
+    steps:
+      # ruleid: gha-cache-key-attacker-controlled
+      - uses: actions/cache@9999999999999999999999999999999999999999
+        with:
+          path: ~/.npm
+          key: cache-${{ github.head_ref }}
+
+      # ok: gha-cache-key-attacker-controlled
+      - uses: actions/cache@9999999999999999999999999999999999999999
+        with:
+          path: ~/.npm
+          key: cache-${{ hashFiles('**/package-lock.json') }}
+
+  workflow-run-cases:
+    runs-on: ubuntu-24.04
+    steps:
+      # The header would be `on: workflow_run:` in real life — the rule's
+      # regex looks for `workflow_run:` literal in the file plus a checkout
+      # of head_sha. Inserted as a comment line just to exercise the rule.
+      # workflow_run:
+      # ruleid: gha-workflow-run-checkout-head-sha
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+  reusable-self-call-cases:
+    runs-on: ubuntu-24.04
+    steps:
+      # ruleid: gha-reusable-workflow-self-call
+      - uses: ./.github/workflows/myself.yml
+
+  continue-on-error-cases:
+    # ruleid: gha-security-job-continue-on-error
+    semgrep:
+      runs-on: ubuntu-24.04
+      continue-on-error: true
+      steps:
+        - run: semgrep scan
+
+  permanently-disabled-cases:
+    # ruleid: gha-security-job-permanently-disabled
+    secret-scan:
+      runs-on: ubuntu-24.04
+      if: false
+      steps:
+        - run: trufflehog filesystem .
+
+# Top-level permissions (file-scope). Trailing-comment + quoted variants.
+# ruleid: gha-permissions-write-all
+permissions: write-all
+# ruleid: gha-permissions-write-all
+permissions: "write-all"
+# ruleid: gha-permissions-write-all
+permissions: 'write-all'  # legacy
+# ok: gha-permissions-write-all
+permissions:
+  contents: read
+
+# Self-hosted runner forms.
+# ruleid: gha-self-hosted-runner
+runs-on: self-hosted
+# ruleid: gha-self-hosted-runner
+runs-on: [self-hosted, linux]
+# ruleid: gha-self-hosted-runner
+runs-on: [ubuntu-24.04, self-hosted]
+# ruleid: gha-self-hosted-runner
+runs-on:
+  - self-hosted
+# ok: gha-self-hosted-runner
+runs-on: ubuntu-24.04
+# ok: gha-self-hosted-runner
+runs-on: [ubuntu-24.04, linux]
+
+# Comment-body argv anti-pattern.
+example-bad-comment-post:
+  # ruleid: gha-comment-body-via-argv
+  run: gh pr comment 42 --body "$(cat body.md)"
+example-good-comment-post:
+  # ok: gha-comment-body-via-argv
+  run: jq -n --rawfile body body.md '{body:$body}' | gh api -X POST repos/o/r/issues/42/comments --input -
