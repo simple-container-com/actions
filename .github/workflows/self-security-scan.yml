@@ -16,6 +16,17 @@ permissions:
 
 jobs:
   security:
-    uses: simple-container-com/actions/.github/workflows/security-scan.yml@main
+    # Pinned to this PR's branch while open — the `enable-sbom` input is
+    # introduced on this same PR and isn't yet on @main. Bump to @main
+    # after merge.
+    uses: simple-container-com/actions/.github/workflows/security-scan.yml@feat/self-security-scan
     permissions:
       contents: read
+    with:
+      # No source-tree dep manifests in this repo (no go.mod / package.json /
+      # Cargo.toml / requirements.txt). Syft would produce a near-empty SBOM,
+      # and Trivy/Grype against it adds nothing over the existing Dependabot
+      # coverage of `github-actions` and `docker` ecosystems pinned in
+      # `versions/Dockerfile`. Keep TruffleHog (secret scan) — it doesn't
+      # need a manifest to find a token in shell scripts or YAML.
+      enable-sbom: false

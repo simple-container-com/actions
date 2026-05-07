@@ -26,6 +26,19 @@ on:
         required: false
         default: true
         type: boolean
+      enable-sbom:
+        description: |
+          Run the SBOM (Syft) + dependency scan (Trivy + Grype) job. Default
+          true. Set false for repos that have no source-tree dependency
+          manifests (e.g. `package.json`, `go.mod`, `Cargo.toml`,
+          `requirements.txt`) — Syft would produce a near-empty SBOM and the
+          downstream Trivy/Grype scans add nothing over the GitHub-side
+          Dependabot coverage of `github-actions` and `docker` ecosystems.
+          When false, the SBOM job is skipped, the comment renders an
+          "SBOM: skipped" row, and the status gate ignores the SBOM result.
+        required: false
+        default: true
+        type: boolean
       secret-scan-extra-excludes:
         description: |
           Additional path patterns (one Go regex per line) appended to
@@ -73,6 +86,7 @@ jobs:
   sbom-scan:
     name: SBOM + Dependency Scan
     runs-on: ubuntu-24.04
+    if: ${{ inputs.enable-sbom }}
     outputs:
       component-count: ${{ steps.sbom.outputs.component-count }}
       trivy-total: ${{ steps.scan.outputs.trivy-total }}
@@ -138,6 +152,7 @@ jobs:
       - name: Evaluate security results
         env:
           FAIL_ON_SECRETS: ${{ inputs.fail-on-secrets }}
+          ENABLE_SBOM: ${{ inputs.enable-sbom }}
           SECRET_RESULT: ${{ needs.secret-scan.result }}
           SECRET_HAS_FINDINGS: ${{ needs.secret-scan.outputs.has-findings }}
           SECRET_FINDINGS_COUNT: ${{ needs.secret-scan.outputs.findings-count }}
@@ -154,7 +169,10 @@ jobs:
             echo "::error::Secret scan job did not succeed (result=${SECRET_RESULT})."
             failed='true'
           fi
-          if [ "${SBOM_RESULT}" != 'success' ]; then
+          # The SBOM/dep scan is only required when the caller asked for it.
+          # When `enable-sbom` is false the job is intentionally skipped, so
+          # `SBOM_RESULT=skipped` is the expected result, not a failure.
+          if [ "${ENABLE_SBOM}" = 'true' ] && [ "${SBOM_RESULT}" != 'success' ]; then
             echo "::error::SBOM/dependency scan job did not succeed (result=${SBOM_RESULT})."
             failed='true'
           fi
