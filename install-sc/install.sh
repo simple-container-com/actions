@@ -76,13 +76,25 @@ for attempt in 1 2 3; do
 done
 
 # --- Verify SHA256 (optional) -----------------------------------------
+# macOS lacks coreutils' `sha256sum`; fall back to BSD `shasum -a 256`.
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256_check() { printf '%s  %s\n' "$1" "$2" | sha256sum -c -; }
+  sha256_digest() { sha256sum "$1" | awk '{print $1}'; }
+elif command -v shasum >/dev/null 2>&1; then
+  sha256_check() { printf '%s  %s\n' "$1" "$2" | shasum -a 256 -c -; }
+  sha256_digest() { shasum -a 256 "$1" | awk '{print $1}'; }
+else
+  echo "::error::Neither sha256sum nor shasum is available on PATH."
+  exit 1
+fi
+
 if [ -n "$SC_SHA256" ]; then
   echo 'Verifying SHA256 against caller-supplied digest...'
-  printf '%s  %s\n' "$SC_SHA256" "$tarball" | sha256sum -c -
+  sha256_check "$SC_SHA256" "$tarball"
 fi
 
 # Always log the actual digest for forensics.
-ACTUAL_SHA256="$(sha256sum "$tarball" | awk '{print $1}')"
+ACTUAL_SHA256="$(sha256_digest "$tarball")"
 echo "sc tarball SHA256: $ACTUAL_SHA256"
 
 # --- Extract binary ---------------------------------------------------

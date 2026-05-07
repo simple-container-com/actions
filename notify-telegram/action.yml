@@ -1,0 +1,29 @@
+name: 'Notify Telegram'
+description: 'Send a Telegram message via the Bot API. The bot token is registered as a secret mask so it never appears in subsequent log output. All consumer-controlled values pass through env vars so the inner shell never re-evaluates them.'
+
+inputs:
+  chat-id:
+    description: 'Telegram chat ID (e.g. `-1002196586936`). Numeric, validated as a signed integer.'
+    required: true
+  token:
+    description: 'Telegram bot token of the form `<bot_id>:<auth>`. Registered with `::add-mask::` before the API call so it is redacted from any subsequent log output.'
+    required: true
+  text:
+    description: 'Message body. Sent as plain text via `--data-urlencode` (no parse_mode), so Markdown / HTML metacharacters render literally and cannot escape into Telegram formatting.'
+    required: true
+  api-host:
+    description: 'Telegram Bot API host. Override only for self-hosted Telegram bot proxies. Validated as a hostname.'
+    required: false
+    default: 'api.telegram.org'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Send Telegram message
+      shell: bash
+      env:
+        TG_CHAT: ${{ inputs.chat-id }}
+        TG_TOKEN: ${{ inputs.token }}
+        TG_TEXT: ${{ inputs.text }}
+        TG_HOST: ${{ inputs.api-host }}
+      run: ${{ github.action_path }}/send.sh
