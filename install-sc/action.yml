@@ -3,7 +3,7 @@ description: 'Download and install the `sc` binary at a pinned version, with opt
 
 inputs:
   version:
-    description: 'SC version, e.g. `2026.4.12`. Empty = `latest` (uses the un-versioned URL). Validated as `<major>.<minor>.<patch>` semver.'
+    description: 'SC version, e.g. `2026.4.12` or a pre-release tag like `2026.4.12-preview.abc1234`. Empty = `latest` (uses the un-versioned URL). Validated as `X.Y.Z[-prerelease]`.'
     required: false
     default: ''
   sha256:

@@ -3,7 +3,7 @@ description: 'Download and install the `welder` binary at a pinned version, with
 
 inputs:
   version:
-    description: 'Welder version, e.g. `2026.4.12`. Empty = `latest` (uses `releases/latest/...`). Validated as `<major>.<minor>.<patch>` semver.'
+    description: 'Welder version, e.g. `2026.4.12` or a pre-release tag like `2026.4.12-preview.abc1234`. Empty = `latest` (uses `releases/latest/...`). Validated as `X.Y.Z[-prerelease]`.'
     required: false
     default: ''
   sha256:

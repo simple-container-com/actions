@@ -13,8 +13,11 @@ WELDER_SHA256="${WELDER_SHA256:-}"
 
 # --- Validate inputs ---------------------------------------------------
 if [ -n "$WELDER_VERSION" ]; then
-  if ! printf '%s' "$WELDER_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-    echo "::error::Welder version must match semver X.Y.Z, got: '$WELDER_VERSION'"
+  # `X.Y.Z` plus optional pre-release suffix `-foo.bar.123` (alphanumerics,
+  # dots, hyphens). Same shape as install-sc/install.sh — see that file
+  # for rationale. Rejects shell-control characters and other dangerous content.
+  if ! printf '%s' "$WELDER_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$'; then
+    echo "::error::Welder version must match X.Y.Z[-prerelease], got: '$WELDER_VERSION'"
     exit 1
   fi
 fi
