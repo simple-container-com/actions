@@ -25,7 +25,7 @@ jobs:
           echo "${{ github.event.issue.body }}"
 
       # Multi-line `run:` followed by a *separate* step whose env: contains
-      # the dangerous interpolation must NOT match (this was a Round-3 P1).
+      # the dangerous interpolation must NOT match (Round-3 P1).
       - run: |
           echo safe
       # ok: gha-script-injection-via-github-event
@@ -33,6 +33,16 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           echo "$PR_TITLE"
+
+      # The next-step `name:` form (Round-1 P2 second-pass): a `run: |`
+      # body followed immediately by `- name: ${{ github.event.X }}` must
+      # NOT match, because the interpolation is on the next step's name,
+      # not inside this step's run block.
+      - run: |
+          echo also-safe
+      # ok: gha-script-injection-via-github-event
+      - name: Step using ${{ github.event.pull_request.title }}
+        run: echo "trusted by action input"
 
       # ruleid: gha-script-injection-via-attacker-controlled-context
       - run: echo "${{ github.event.workflow_run.head_branch }}"
@@ -85,6 +95,18 @@ jobs:
 
       # An action OTHER than checkout that happens to take a similarly-named
       # input must NOT trip the rule (Round-3 P1 — was previously unscoped).
+      # ok: gha-checkout-persist-credentials-true
+      - uses: someorg/cred-helper@9999999999999999999999999999999999999999
+        with:
+          persist-credentials: true
+
+      # Round-1 P2 second-pass: a safe `actions/checkout` (persist-
+      # credentials: false) must NOT trip the rule even if a SUBSEQUENT
+      # unrelated action's `with:` later has `persist-credentials: true`.
+      # The window must stop at the next step start.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
       # ok: gha-checkout-persist-credentials-true
       - uses: someorg/cred-helper@9999999999999999999999999999999999999999
         with:

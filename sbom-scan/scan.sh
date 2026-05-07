@@ -82,8 +82,9 @@ if [ "$grype_status" -ne 0 ]; then
   exit 1
 fi
 
-# Both scanners must produce parseable JSON output; missing/empty file is
-# also a failure, not a "0 findings" pass.
+# Both scanners must produce parseable JSON output AND match the expected
+# top-level shape. A scanner that exits 0 with `{}` would otherwise still
+# count as "0 findings" — bad.
 for f in "$TRIVY_JSON" "$GRYPE_JSON"; do
   if [ ! -s "$f" ]; then
     echo "::error::Scanner output missing or empty: $f"
@@ -94,6 +95,21 @@ for f in "$TRIVY_JSON" "$GRYPE_JSON"; do
     exit 1
   fi
 done
+# Trivy SBOM scan ships `Results` (array or null when no vulns).
+trivy_shape=$(jq -r '.Results | type' "$TRIVY_JSON" 2>/dev/null || printf 'missing')
+case "$trivy_shape" in
+  array|null) ;;
+  *)
+    echo "::error::Trivy output schema unexpected: .Results is '$trivy_shape' (want array or null)."
+    exit 1
+    ;;
+esac
+# Grype always ships `matches` as an array.
+grype_shape=$(jq -r '.matches | type' "$GRYPE_JSON" 2>/dev/null || printf 'missing')
+if [ "$grype_shape" != 'array' ]; then
+  echo "::error::Grype output schema unexpected: .matches is '$grype_shape' (want array)."
+  exit 1
+fi
 
 # --- Parse Trivy results ---
 T_TOTAL=0; T_CRITICAL=0; T_HIGH=0; T_MEDIUM=0; T_LOW=0; T_UNKNOWN=0

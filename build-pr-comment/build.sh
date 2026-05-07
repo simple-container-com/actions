@@ -8,8 +8,20 @@ set -euo pipefail
 
 # All inputs are passed via env. Treat them as untrusted strings; sanitise.
 sanitise() {
-  # Allow only [A-Za-z0-9._/-]; replace anything else with '_'.
-  printf '%s' "${1:-}" | tr -c 'A-Za-z0-9._/-' '_'
+  # Allow only [A-Za-z0-9._-]; replace anything else with '_'.
+  # Note: '/' is NOT in the allowlist — product-name is a display label,
+  # not a path.
+  printf '%s' "${1:-}" | tr -c 'A-Za-z0-9._-' '_'
+}
+
+product_name_safe() {
+  # Apply sanitise + reject path-looking values (`..`, leading `/` or `-`)
+  # so the rendered comment header can't show misleading values.
+  local raw="${1:-}"
+  case "$raw" in
+    ''|*..*|/*|-*) raw='unknown' ;;
+  esac
+  sanitise "$raw"
 }
 
 valid_int_or_zero() {
@@ -24,7 +36,7 @@ PRODUCT_NAME_RAW="${PRODUCT_NAME_INPUT:-}"
 if [ -z "$PRODUCT_NAME_RAW" ]; then
   PRODUCT_NAME_RAW="${DEFAULT_PRODUCT_NAME:-unknown}"
 fi
-PRODUCT_NAME="$(sanitise "$PRODUCT_NAME_RAW")"
+PRODUCT_NAME="$(product_name_safe "$PRODUCT_NAME_RAW")"
 
 GIT_SHA_RAW="${GIT_SHA:-}"
 if printf '%s' "$GIT_SHA_RAW" | grep -qE '^[0-9a-f]{7,40}$'; then

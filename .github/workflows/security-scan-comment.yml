@@ -5,14 +5,21 @@ name: Security Scan Comment (reusable)
 # with `pull-requests: write`, so it can post comments on fork PRs whose own
 # scan workflow ran with a read-only token.
 #
-# Trust posture (per Codex review round 1, P1 #1):
-#   - PR number is derived from the trusted `workflow_run` event payload
-#     (`pull_requests[0].number` for same-repo PRs, API lookup by
-#     `head_sha` for fork PRs). NEVER read from the artifact.
+# Trust posture:
+#   - PR number is derived from the trusted `workflow_run` event payload:
+#     `pull_requests[0].number` for same-repo PRs; for fork PRs we use the
+#     `repos/{owner}/{repo}/commits/{sha}/pulls` API (returns ALL PRs for
+#     that exact commit, regardless of state — works for the >100-open-PRs
+#     and closed-PR cases that a `pulls?state=open` listing misses). NEVER
+#     read from the artifact.
 #   - Marker is hardcoded here (`## Security Scan Results`). NEVER read from
 #     the artifact.
 #   - Body is read from artifact (rendered by trusted workflow code, size-
 #     capped server-side).
+#   - Freshness: before posting, we re-read the PR's current head SHA and
+#     bail out (with a warning, no failure) if it has moved past the SHA
+#     our scan was for. Prevents an old-but-slow run from overwriting a
+#     newer fast run's comment.
 
 on:
   workflow_call:
@@ -37,25 +44,58 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Same-repo PRs populate pull_requests[]. Fork PRs leave it empty,
-          # so we look the PR up by head_sha via the API (trusted token).
+
+          if ! printf '%s' "$HEAD_SHA" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "::error::workflow_run.head_sha is not a 40-char SHA: '$HEAD_SHA'"
+            exit 1
+          fi
+
+          # Same-repo PRs: pull_requests[] is populated. Trust it.
           n="$(printf '%s' "$PULL_REQUESTS_JSON" | jq -r '.[0].number // empty')"
+
           if [ -z "$n" ]; then
-            if ! printf '%s' "$HEAD_SHA" | grep -qE '^[0-9a-f]{40}$'; then
-              echo "::error::workflow_run.head_sha is not a 40-char SHA: '$HEAD_SHA'"
+            # Fork PR: pull_requests[] is empty by GitHub design. Use the
+            # commits-to-pulls endpoint, which returns every PR whose
+            # commit set contains $HEAD_SHA — including closed ones.
+            mapfile -t matches < <(
+              gh api "repos/$REPO/commits/$HEAD_SHA/pulls" \
+                --jq ".[] | select(.head.sha == \"$HEAD_SHA\") | .number"
+            )
+            if [ "${#matches[@]}" -eq 0 ]; then
+              echo "::error::No PR found whose current head equals $HEAD_SHA"
               exit 1
             fi
-            n="$(gh api "repos/$REPO/pulls?state=open&per_page=100" \
-              --jq ".[] | select(.head.sha == \"$HEAD_SHA\") | .number" \
-              | head -n 1)"
+            if [ "${#matches[@]}" -gt 1 ]; then
+              echo "::warning::Multiple PRs match head_sha $HEAD_SHA: ${matches[*]}. Using first."
+            fi
+            n="${matches[0]}"
           fi
+
           if ! printf '%s' "$n" | grep -qE '^[1-9][0-9]*$'; then
-            echo '::error::Could not determine PR number from workflow_run event.'
+            echo "::error::Resolved PR number is not a positive integer: '$n'"
             exit 1
           fi
           echo "number=$n" >> "$GITHUB_OUTPUT"
 
+      - name: Freshness check (skip if PR head has moved past our scan)
+        id: fresh
+        env:
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')"
+          if [ "$current" != "$HEAD_SHA" ]; then
+            echo "::warning::PR #$PR_NUMBER head moved from $HEAD_SHA to $current; the newer run will post. Skipping stale comment update."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Post or update sticky PR comment
+        if: steps.fresh.outputs.skip != 'true'
         uses: simple-container-com/actions/post-pr-comment@main
         with:
           workflow-run-id: ${{ github.event.workflow_run.id }}

@@ -19,10 +19,11 @@ rules:
     pattern-either:
       # Single-line: `run: foo ${{ github.event.X }}` (with or without leading `- `).
       - pattern-regex: '(?m)^[ \t]+(?:- )?run:[ \t]+[^|>\n][^\n]*\$\{\{[^}]*github\.event\.[^}]+\}\}'
-      # Multi-line `run: |` block. The body iteration excludes lines that
-      # begin a sibling step (`[ \t]+- `), so the match cannot leak into
-      # the next step's `env:` mapping.
-      - pattern-regex: '(?ms)^[ \t]+(?:- )?run:[ \t]*[|>][^\n]*\n((?:(?![ \t]+- )[^\n]*\n){0,30}?)[^\n]*\$\{\{[^}]*github\.event\.[^}]+\}\}'
+      # Multi-line `run: |` block. Body lines AND the final interpolation
+      # line both exclude lines that begin a sibling step (`[ \t]+- `), so
+      # the match cannot leak into the next step's `env:`/`name:` content
+      # (the latter was a residual gap noted in the second-pass review).
+      - pattern-regex: '(?ms)^[ \t]+(?:- )?run:[ \t]*[|>][^\n]*\n((?:(?![ \t]+- )[^\n]*\n){0,30}?)(?![ \t]+- )[^\n]*\$\{\{[^}]*github\.event\.[^}]+\}\}'
     paths:
       include:
         - "**/.github/workflows/*.yml"
@@ -47,7 +48,7 @@ rules:
       block. Pass them through `env:` and quote on use.
     pattern-either:
       - pattern-regex: '(?m)^[ \t]+(?:- )?run:[ \t]+[^|>\n][^\n]*\$\{\{[^}]*(github\.head_ref|head_commit\.message|issue\.title|issue\.body|comment\.body|review\.body|pull_request\.body|pull_request\.title|pull_request\.head\.ref|pull_request\.head\.label|workflow_run\.head_branch|workflow_run\.head_commit\.message|github\.ref_name|inputs\.)[^}]*\}\}'
-      - pattern-regex: '(?ms)^[ \t]+(?:- )?run:[ \t]*[|>][^\n]*\n((?:(?![ \t]+- )[^\n]*\n){0,30}?)[^\n]*\$\{\{[^}]*(github\.head_ref|head_commit\.message|issue\.title|issue\.body|comment\.body|review\.body|pull_request\.body|pull_request\.title|pull_request\.head\.ref|pull_request\.head\.label|workflow_run\.head_branch|workflow_run\.head_commit\.message|github\.ref_name|inputs\.)[^}]*\}\}'
+      - pattern-regex: '(?ms)^[ \t]+(?:- )?run:[ \t]*[|>][^\n]*\n((?:(?![ \t]+- )[^\n]*\n){0,30}?)(?![ \t]+- )[^\n]*\$\{\{[^}]*(github\.head_ref|head_commit\.message|issue\.title|issue\.body|comment\.body|review\.body|pull_request\.body|pull_request\.title|pull_request\.head\.ref|pull_request\.head\.label|workflow_run\.head_branch|workflow_run\.head_commit\.message|github\.ref_name|inputs\.)[^}]*\}\}'
     paths:
       include:
         - "**/.github/workflows/*.yml"
@@ -69,7 +70,7 @@ rules:
       runs with full privileges. Use `pull_request` for PR scanning, or
       split into a scan job (pull_request) + a privileged comment/upload
       job (workflow_run).
-    pattern-regex: '(?s)\bpull_request_target\b[\s\S]*?actions/checkout[^\n]*\n[ \t]+with:\s*(\n[ \t]+[^\n]*)*?ref:[ \t]*[^\n]*(github\.event\.pull_request\.head\.(sha|ref)|github\.head_ref|github\.event\.workflow_run\.head_sha)'
+    pattern-regex: '(?s)\bpull_request_target\b[\s\S]{0,8000}?actions/checkout@[\s\S]{0,500}?ref:[ \t]*[^\n]*(github\.event\.pull_request\.head\.(sha|ref)|github\.head_ref|github\.event\.workflow_run\.head_sha)'
     paths:
       include:
         - "**/.github/workflows/*.yml"
@@ -140,10 +141,12 @@ rules:
 
   # ====================================================================
   # 7. Explicit `persist-credentials: true` on actions/checkout. Scoped to
-  #    actions/checkout via a regex that requires the `uses:` line of
-  #    actions/checkout within ~10 lines BEFORE the `persist-credentials:
-  #    true` line — so it doesn't trip on unrelated actions that happen to
-  #    take a similarly-named input.
+  #    actions/checkout AND step-bounded: the body lines we scan after the
+  #    `uses: actions/checkout` line must NOT begin a sibling step
+  #    (`[ \t]+- `), so the rule cannot reach into a following unrelated
+  #    action that happens to take a similarly-named input.
+  #    Catches lowercase `true`, capitalised `True`, and quoted `"true"` /
+  #    `'true'`.
   # ====================================================================
   - id: gha-checkout-persist-credentials-true
     languages: [yaml]
@@ -153,7 +156,7 @@ rules:
       GITHUB_TOKEN into `.git/config`. Any later step (build, test) can
       read it. Set to `false` unless a later step explicitly needs to
       `git push` and you accept the risk.
-    pattern-regex: '(?ms)uses:\s+["'']?actions/checkout@[^\n]*\n(?:[ \t]+[^\n]*\n){0,10}?[ \t]+persist-credentials:[ \t]+["'']?[Tt]rue["'']?'
+    pattern-regex: '(?ms)uses:\s+["'']?actions/checkout@[^\n]*\n(?:(?![ \t]+- )[ \t]+[^\n]*\n){0,30}?[ \t]+persist-credentials:[ \t]+["'']?[Tt]rue["'']?'
     paths:
       include:
         - "**/.github/workflows/*.yml"

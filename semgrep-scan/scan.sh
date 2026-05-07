@@ -64,11 +64,30 @@ mkdir -p "$OUTPUT_DIR"
 configs=('--config' '/action/rules')
 
 if [ -n "$CONSUMER_RULES" ]; then
-  if [ -e "$GITHUB_WORKSPACE/$CONSUMER_RULES" ]; then
-    configs+=('--config' "/src/$CONSUMER_RULES")
-    echo "Including consumer rules from: $CONSUMER_RULES"
-  else
+  full_path="$GITHUB_WORKSPACE/$CONSUMER_RULES"
+  if [ ! -e "$full_path" ]; then
     echo "::warning::consumer-rules path '$CONSUMER_RULES' not present in workspace; skipping."
+  else
+    # Resolve symlinks and assert the result stays inside $GITHUB_WORKSPACE.
+    # Without this, a consumer-controlled symlink under .semgrep/rules
+    # could redirect Semgrep config loading to an arbitrary path on the
+    # runner.
+    workspace_real="$(realpath -- "$GITHUB_WORKSPACE")"
+    resolved="$(realpath -- "$full_path" 2>/dev/null || true)"
+    if [ -z "$resolved" ]; then
+      echo "::error::consumer-rules path '$CONSUMER_RULES' did not resolve."
+      exit 1
+    fi
+    case "$resolved" in
+      "$workspace_real"|"$workspace_real"/*)
+        configs+=('--config' "/src/$CONSUMER_RULES")
+        echo "Including consumer rules from: $CONSUMER_RULES"
+        ;;
+      *)
+        echo "::error::consumer-rules '$CONSUMER_RULES' resolves outside the workspace (->$resolved). Refusing to load."
+        exit 1
+        ;;
+    esac
   fi
 fi
 
@@ -120,6 +139,14 @@ fi
 if ! jq -e . "$RESULTS_FILE" >/dev/null 2>&1; then
   echo '::error::Semgrep output is not valid JSON.'
   cat -- "$SEMGREP_LOG" >&2
+  exit 1
+fi
+
+# Semgrep always emits `results` as an array. A schema mismatch (e.g. a
+# wrapper that returned `{}`) must fail rather than collapse to 0 findings.
+results_shape=$(jq -r '.results | type' "$RESULTS_FILE" 2>/dev/null || printf 'missing')
+if [ "$results_shape" != 'array' ]; then
+  echo "::error::Semgrep output schema unexpected: .results is '$results_shape' (want array)."
   exit 1
 fi
 

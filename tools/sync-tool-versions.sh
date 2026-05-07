@@ -65,7 +65,7 @@ run_pass() {
     local pin="${BASH_REMATCH[1]}"
     local stage="${BASH_REMATCH[2]}"
 
-    if [[ ! "$pin" =~ ^[A-Za-z0-9._/-]+:[A-Za-z0-9._-]+@sha256:[a-f0-9]{64}$ ]]; then
+    if [[ ! "$pin" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*:[A-Za-z0-9._-]+@sha256:[a-f0-9]{64}$ ]]; then
       echo "::error::Bad FROM in versions/Dockerfile: '$line' (must be image:tag@sha256:digest)" >&2
       drift=1
       continue

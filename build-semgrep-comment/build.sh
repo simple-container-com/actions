@@ -7,7 +7,17 @@ set -euo pipefail
 : "${RUNNER_TEMP:?RUNNER_TEMP must be set (provided by GitHub runner)}"
 
 sanitise() {
-  printf '%s' "${1:-}" | tr -c 'A-Za-z0-9._/-' '_'
+  # Allow only [A-Za-z0-9._-]; replace anything else with '_'. '/' is NOT
+  # in the allowlist — product-name is a display label, not a path.
+  printf '%s' "${1:-}" | tr -c 'A-Za-z0-9._-' '_'
+}
+
+product_name_safe() {
+  local raw="${1:-}"
+  case "$raw" in
+    ''|*..*|/*|-*) raw='unknown' ;;
+  esac
+  sanitise "$raw"
 }
 
 valid_int_or_zero() {
@@ -22,7 +32,7 @@ PRODUCT_NAME_RAW="${PRODUCT_NAME_INPUT:-}"
 if [ -z "$PRODUCT_NAME_RAW" ]; then
   PRODUCT_NAME_RAW="${DEFAULT_PRODUCT_NAME:-unknown}"
 fi
-PRODUCT_NAME="$(sanitise "$PRODUCT_NAME_RAW")"
+PRODUCT_NAME="$(product_name_safe "$PRODUCT_NAME_RAW")"
 
 GIT_SHA_RAW="${GIT_SHA:-}"
 if printf '%s' "$GIT_SHA_RAW" | grep -qE '^[0-9a-f]{7,40}$'; then

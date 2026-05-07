@@ -1,17 +1,9 @@
 name: Semgrep Comment (reusable)
 
-# Companion to semgrep.yml. Triggered in consumer repos by `workflow_run`
-# after the Semgrep workflow completes. Runs in the *base repo* context with
-# `pull-requests: write`, so it can post comments on fork PRs whose own scan
-# ran with a read-only token.
-#
-# Trust posture (per Codex review round 1, P1 #1):
-#   - PR number is derived from the trusted `workflow_run` event payload,
-#     never from the artifact.
-#   - Marker is hardcoded here (`## Semgrep Scan Results`), never from the
-#     artifact.
-#   - Body is read from artifact (rendered by trusted workflow code,
-#     size-capped server-side).
+# Companion to semgrep.yml. Same trust posture as security-scan-comment.yml:
+# PR number from workflow_run event (with `commits/{sha}/pulls` API fallback
+# for fork PRs, NOT a paginated open-PR scan); marker hardcoded; body
+# size-capped server-side; freshness check before posting.
 
 on:
   workflow_call:
@@ -36,23 +28,54 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+
+          if ! printf '%s' "$HEAD_SHA" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "::error::workflow_run.head_sha is not a 40-char SHA: '$HEAD_SHA'"
+            exit 1
+          fi
+
           n="$(printf '%s' "$PULL_REQUESTS_JSON" | jq -r '.[0].number // empty')"
+
           if [ -z "$n" ]; then
-            if ! printf '%s' "$HEAD_SHA" | grep -qE '^[0-9a-f]{40}$'; then
-              echo "::error::workflow_run.head_sha is not a 40-char SHA: '$HEAD_SHA'"
+            mapfile -t matches < <(
+              gh api "repos/$REPO/commits/$HEAD_SHA/pulls" \
+                --jq ".[] | select(.head.sha == \"$HEAD_SHA\") | .number"
+            )
+            if [ "${#matches[@]}" -eq 0 ]; then
+              echo "::error::No PR found whose current head equals $HEAD_SHA"
               exit 1
             fi
-            n="$(gh api "repos/$REPO/pulls?state=open&per_page=100" \
-              --jq ".[] | select(.head.sha == \"$HEAD_SHA\") | .number" \
-              | head -n 1)"
+            if [ "${#matches[@]}" -gt 1 ]; then
+              echo "::warning::Multiple PRs match head_sha $HEAD_SHA: ${matches[*]}. Using first."
+            fi
+            n="${matches[0]}"
           fi
+
           if ! printf '%s' "$n" | grep -qE '^[1-9][0-9]*$'; then
-            echo '::error::Could not determine PR number from workflow_run event.'
+            echo "::error::Resolved PR number is not a positive integer: '$n'"
             exit 1
           fi
           echo "number=$n" >> "$GITHUB_OUTPUT"
 
+      - name: Freshness check (skip if PR head has moved past our scan)
+        id: fresh
+        env:
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')"
+          if [ "$current" != "$HEAD_SHA" ]; then
+            echo "::warning::PR #$PR_NUMBER head moved from $HEAD_SHA to $current; the newer run will post. Skipping stale comment update."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Post or update sticky PR comment
+        if: steps.fresh.outputs.skip != 'true'
         uses: simple-container-com/actions/post-pr-comment@main
         with:
           workflow-run-id: ${{ github.event.workflow_run.id }}
