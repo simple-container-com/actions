@@ -1,12 +1,20 @@
 version: 2
 
-# Dependabot tracks first-party `actions/*` references in our reusable
-# workflows and composite actions, and opens PRs to bump them by SHA.
+# Two ecosystems track this repo:
 #
-# Tool Docker images (TruffleHog, Syft, Trivy, Grype, Semgrep, actionlint,
-# shellcheck) live as `image:tag@sha256:...` strings inside shell scripts;
-# Dependabot does not parse those today, so they are bumped manually as
-# part of a periodic security review (see README — "Bumping tool versions").
+# 1. github-actions: bumps `actions/*` SHAs in our reusable workflows and
+#    composite actions.
+#
+# 2. docker: bumps the FROM lines in `versions/Dockerfile`, which is the
+#    single catalogue of every tool image we run via `docker run`.
+#    Dependabot does NOT parse `image:tag@sha256:...` strings inside
+#    shell scripts or `action.yml` `default:` values, so the Dockerfile
+#    is the only thing it sees. When Dependabot bumps a FROM, the
+#    `Tool Version Sync` workflow fails until a human runs
+#    `tools/sync-tool-versions.sh --apply` on the PR branch and pushes
+#    the propagated changes. `rebase-strategy: disabled` keeps that
+#    follow-up commit from being silently rebased away.
+
 updates:
   - package-ecosystem: github-actions
     directory: /
@@ -26,3 +34,17 @@ updates:
         update-types:
           - minor
           - patch
+
+  - package-ecosystem: docker
+    directory: /versions
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    rebase-strategy: disabled
+    labels:
+      - dependencies
+      - docker
+    commit-message:
+      prefix: deps
+      include: scope

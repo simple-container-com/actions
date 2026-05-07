@@ -178,8 +178,11 @@ There are **no** third-party `uses:` actions. Every action is from the first-par
 
 ### Bumping tool versions
 
-- **Actions** (`actions/*`) are bumped automatically by Dependabot — see [`.github/dependabot.yml`](.github/dependabot.yml). Weekly check; minor + patch grouped into a single PR.
-- **Docker images** are bumped manually because Dependabot doesn't parse `image:tag@sha256:...` strings inside shell scripts. Process: re-resolve the latest stable tag and digest, edit the `default:` value in the relevant `action.yml`, run `semgrep-scan/run-tests.sh` locally, open a PR.
+- **Actions** (`actions/*`) are bumped automatically by Dependabot via the `github-actions` ecosystem — see [`.github/dependabot.yml`](.github/dependabot.yml). Weekly check; minor + patch grouped into a single PR.
+- **Docker images** are tracked through [`versions/Dockerfile`](versions/Dockerfile) — a never-built catalogue of every tool image, with one `FROM image:tag@sha256:digest AS <stage>` line each. Dependabot's `docker` ecosystem watches it and opens auto-bump PRs. The image references in composite actions and shell scripts are kept in sync by [`tools/sync-tool-versions.sh`](tools/sync-tool-versions.sh):
+  - The [`Tool Version Sync`](.github/workflows/tool-version-sync.yml) workflow runs `--check` on every PR and fails if any consumer is out of step with the Dockerfile.
+  - When Dependabot opens a Dockerfile bump PR, the sync-check goes red. Pull the branch, run `tools/sync-tool-versions.sh --apply`, commit, push. Workflow goes green; merge.
+  - Adding a new tool image: add a `FROM ... AS <stage>` row to the Dockerfile, the consumer reference in the relevant action.yml/script, and a `[<stage>]='<file>'` row to the targets map at the top of `tools/sync-tool-versions.sh`.
 
 ## Custom Semgrep rules
 
