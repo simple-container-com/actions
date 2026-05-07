@@ -9,8 +9,20 @@ inputs:
     description: 'Telegram bot token of the form `<bot_id>:<auth>`. Registered with `::add-mask::` before the API call so it is redacted from any subsequent log output.'
     required: true
   text:
-    description: 'Message body. Sent as plain text via `--data-urlencode` (no parse_mode), so Markdown / HTML metacharacters render literally and cannot escape into Telegram formatting.'
+    description: 'Message text rendered before the (optional) inline link. The composite HTML-escapes this value before sending, so commit-message metacharacters (`&`, `<`, `>`, `"`) render literally and cannot break HTML formatting.'
     required: true
+  link-url:
+    description: 'OPTIONAL https:// URL. When set, an inline `<a href="...">...</a>` anchor is rendered immediately after `text` (typically the PR URL, run URL, or commit URL). Restricted to `https://` schemes — `javascript:`, `data:`, `tg://`, etc. are rejected.'
+    required: false
+    default: ''
+  link-text:
+    description: 'OPTIONAL anchor text for `link-url`. Defaults to the URL itself. HTML-escaped before rendering, so PR / commit titles are safe.'
+    required: false
+    default: ''
+  suffix:
+    description: 'OPTIONAL text appended AFTER the inline link (e.g. `" by Cre-eD"`). Lets the link sit mid-message rather than at the end. HTML-escaped.'
+    required: false
+    default: ''
   api-host:
     description: 'Telegram Bot API host. Override only for self-hosted Telegram bot proxies. Validated as a hostname.'
     required: false
@@ -25,5 +37,8 @@ runs:
         TG_CHAT: ${{ inputs.chat-id }}
         TG_TOKEN: ${{ inputs.token }}
         TG_TEXT: ${{ inputs.text }}
+        TG_LINK_URL: ${{ inputs.link-url }}
+        TG_LINK_TEXT: ${{ inputs.link-text }}
+        TG_SUFFIX: ${{ inputs.suffix }}
         TG_HOST: ${{ inputs.api-host }}
       run: ${{ github.action_path }}/send.sh
