@@ -1,0 +1,34 @@
+name: 'Post PR Comment from Artifact'
+description: 'Download a pr-comment-body artifact from an upstream workflow_run and post or update a sticky PR comment via gh CLI. Privileged step — never reads PR code.'
+
+inputs:
+  workflow-run-id:
+    description: 'ID of the upstream workflow run that uploaded pr-comment-body.'
+    required: true
+  github-token:
+    description: 'GITHUB_TOKEN with pull-requests:write and actions:read.'
+    required: true
+  marker:
+    description: 'Marker string used to find the existing sticky comment.'
+    required: false
+    default: '## Security Scan Results'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Download PR comment artifact
+      uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16  # v4.1.8
+      with:
+        name: pr-comment-body
+        path: pr-comment
+        run-id: ${{ inputs.workflow-run-id }}
+        github-token: ${{ inputs.github-token }}
+
+    - name: Post or update PR comment
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        MARKER: ${{ inputs.marker }}
+        ARTIFACT_DIR: ${{ github.workspace }}/pr-comment
+      run: ${{ github.action_path }}/post.sh

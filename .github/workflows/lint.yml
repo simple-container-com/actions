@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   actionlint:
-    name: actionlint + shellcheck
+    name: actionlint
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -19,12 +19,41 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Run actionlint (with shellcheck)
+      - name: 'Run actionlint (with shellcheck on inline run blocks)'
         run: |
           set -euo pipefail
-          # actionlint's official Docker image bundles shellcheck for the run: blocks
           docker run --rm \
             -v "$PWD:/repo:ro" \
             -w /repo \
             rhysd/actionlint:1.7.4 \
             -color
+
+  shellcheck:
+    name: shellcheck (composite-action scripts)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Find and lint .sh scripts
+        run: |
+          set -euo pipefail
+          # Use git ls-files so we only inspect tracked content; exclude
+          # the test fixture which intentionally contains rule-violating
+          # constructs.
+          mapfile -t scripts < <(git ls-files '*.sh' '*.bash' \
+            ':(exclude).semgrep/tests/*')
+          if [ "${#scripts[@]}" -eq 0 ]; then
+            echo 'No shell scripts to lint.'
+            exit 0
+          fi
+          printf '%s\n' "${scripts[@]}"
+          docker run --rm \
+            -v "$PWD:/mnt:ro" \
+            -w /mnt \
+            koalaman/shellcheck:v0.10.0 \
+            --severity=warning \
+            --color=always \
+            "${scripts[@]}"

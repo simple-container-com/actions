@@ -1,0 +1,80 @@
+name: 'SBOM Vulnerability Scan (Trivy + Grype)'
+description: 'Scan a CycloneDX SBOM with Trivy and Grype in parallel using pinned Docker images. Emits per-severity counts and writes a severity table to the step summary.'
+
+inputs:
+  sbom-file:
+    description: 'Absolute path to the CycloneDX JSON SBOM to scan.'
+    required: true
+  trivy-image:
+    description: 'Pinned Trivy Docker image reference.'
+    required: false
+    default: 'public.ecr.aws/aquasecurity/trivy:0.68.2'
+  grype-image:
+    description: 'Pinned Grype Docker image reference.'
+    required: false
+    default: 'ghcr.io/anchore/grype:v0.106.0'
+
+outputs:
+  trivy-total:
+    value: ${{ steps.run.outputs.trivy-total }}
+  trivy-critical:
+    value: ${{ steps.run.outputs.trivy-critical }}
+  trivy-high:
+    value: ${{ steps.run.outputs.trivy-high }}
+  trivy-medium:
+    value: ${{ steps.run.outputs.trivy-medium }}
+  trivy-low:
+    value: ${{ steps.run.outputs.trivy-low }}
+  trivy-unknown:
+    value: ${{ steps.run.outputs.trivy-unknown }}
+  grype-total:
+    value: ${{ steps.run.outputs.grype-total }}
+  grype-critical:
+    value: ${{ steps.run.outputs.grype-critical }}
+  grype-high:
+    value: ${{ steps.run.outputs.grype-high }}
+  grype-medium:
+    value: ${{ steps.run.outputs.grype-medium }}
+  grype-low:
+    value: ${{ steps.run.outputs.grype-low }}
+  grype-unknown:
+    value: ${{ steps.run.outputs.grype-unknown }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Run Trivy + Grype in parallel
+      id: run
+      shell: bash
+      env:
+        SBOM_FILE: ${{ inputs.sbom-file }}
+        TRIVY_IMAGE: ${{ inputs.trivy-image }}
+        GRYPE_IMAGE: ${{ inputs.grype-image }}
+      run: ${{ github.action_path }}/scan.sh
+
+    - name: Add scan summary
+      shell: bash
+      env:
+        T_CRITICAL: ${{ steps.run.outputs.trivy-critical }}
+        T_HIGH: ${{ steps.run.outputs.trivy-high }}
+        T_MEDIUM: ${{ steps.run.outputs.trivy-medium }}
+        T_LOW: ${{ steps.run.outputs.trivy-low }}
+        T_UNKNOWN: ${{ steps.run.outputs.trivy-unknown }}
+        T_TOTAL: ${{ steps.run.outputs.trivy-total }}
+        G_CRITICAL: ${{ steps.run.outputs.grype-critical }}
+        G_HIGH: ${{ steps.run.outputs.grype-high }}
+        G_MEDIUM: ${{ steps.run.outputs.grype-medium }}
+        G_LOW: ${{ steps.run.outputs.grype-low }}
+        G_UNKNOWN: ${{ steps.run.outputs.grype-unknown }}
+        G_TOTAL: ${{ steps.run.outputs.grype-total }}
+      run: ${{ github.action_path }}/summary.sh
+
+    - name: Upload vulnerability scan results
+      uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
+      with:
+        name: vulnerability-scan-results
+        path: |
+          ${{ runner.temp }}/vuln-scan/trivy-scan.json
+          ${{ runner.temp }}/vuln-scan/grype-scan.json
+        retention-days: 7
+        if-no-files-found: ignore

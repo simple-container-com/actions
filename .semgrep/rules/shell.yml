@@ -1,0 +1,110 @@
+rules:
+  # ====================================================================
+  # eval — almost always wrong in CI scripts
+  # ====================================================================
+  - id: shell-eval-usage
+    languages: [bash]
+    severity: ERROR
+    message: >-
+      Avoid `eval` in shell scripts. It executes its argument as code,
+      which is a command-injection risk if any input is attacker-controlled.
+      Prefer `printf -v VAR ...` for indirect assignment, `declare -n` for
+      name references, or rework the design so eval is unnecessary.
+    pattern-either:
+      - pattern: eval ...
+    paths:
+      include:
+        - "**/*.sh"
+        - "**/*.bash"
+    metadata:
+      category: security
+      cwe: "CWE-78: OS Command Injection"
+      owasp: "A03:2021 - Injection"
+
+  # ====================================================================
+  # curl|sh installer pattern
+  # ====================================================================
+  - id: shell-curl-pipe-to-shell
+    languages: [bash]
+    severity: ERROR
+    message: >-
+      Piping `curl`/`wget` output directly into a shell is a supply-chain
+      risk. Pin a Docker image or release artifact, verify checksum/signature,
+      then execute. Never `curl | sh` from CI.
+    pattern-either:
+      - pattern: |
+          curl ... | sh
+      - pattern: |
+          curl ... | bash
+      - pattern: |
+          wget ... | sh
+      - pattern: |
+          wget ... | bash
+    paths:
+      include:
+        - "**/*.sh"
+        - "**/*.bash"
+        - "**/*.yml"
+        - "**/*.yaml"
+    metadata:
+      category: security
+      cwe: "CWE-494: Download of Code Without Integrity Check"
+
+  # ====================================================================
+  # rm -rf / and similar disasters
+  # ====================================================================
+  - id: shell-rm-rf-root
+    languages: [bash]
+    severity: ERROR
+    message: >-
+      `rm -rf /` (or trailing-slash on a possibly-empty variable) can wipe
+      the runner. If you really need recursive delete, use a path you
+      constructed yourself (e.g., `"$RUNNER_TEMP/foo"`) and assert non-empty
+      first.
+    pattern-either:
+      - pattern: rm -rf /
+      - pattern: rm -rf /*
+      - pattern: rm -rf "$/"
+    paths:
+      include:
+        - "**/*.sh"
+        - "**/*.bash"
+    metadata:
+      category: security
+
+  # ====================================================================
+  # Sourcing a path that's a variable reference — high risk of injection
+  # ====================================================================
+  - id: shell-source-of-variable-path
+    languages: [generic]
+    severity: WARNING
+    message: >-
+      Sourcing a file via a variable reference executes that file as bash.
+      If the variable can be influenced by attacker input, this is RCE.
+      Hard-code the path, or validate the variable matches an allowlist
+      before sourcing.
+    pattern-regex: '^\s*(source|\.)\s+\$[A-Za-z_{]'
+    paths:
+      include:
+        - "**/*.sh"
+        - "**/*.bash"
+    metadata:
+      category: security
+
+  # ====================================================================
+  # Use cat -- "$file" so a leading dash in the filename can't smuggle a flag
+  # ====================================================================
+  - id: shell-cat-without-double-dash
+    languages: [bash]
+    severity: INFO
+    message: >-
+      Use `cat -- "$FILE"` so a filename starting with `-` is not interpreted
+      as a flag. Same applies to `rm`, `chmod`, etc.
+    pattern: cat "$...X"
+    pattern-not: cat -- "$...X"
+    paths:
+      include:
+        - "**/*.sh"
+        - "**/*.bash"
+    metadata:
+      category: best-practice

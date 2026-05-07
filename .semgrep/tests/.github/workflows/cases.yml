@@ -1,0 +1,87 @@
+# Test fixtures for .semgrep/rules/github-actions.yml
+#
+# Lines marked `# ruleid: <id>` MUST match that rule.
+# Lines marked `# ok: <id>` MUST NOT match that rule.
+#
+# This file is never used as a real workflow; rule paths-include
+# match `**/.github/workflows/*.yml`, so we live in
+# `.semgrep/tests/.github/workflows/` mirror via a symlink. To keep
+# things simple, this test file is referenced explicitly in the
+# semgrep test workflow; the path-include block is overridden via
+# --include in CI.
+
+name: Fixtures
+
+on: pull_request
+
+jobs:
+  bad:
+    runs-on: ubuntu-24.04
+    steps:
+      # ruleid: gha-script-injection-via-github-event
+      - run: echo "${{ github.event.pull_request.title }}"
+
+      # ruleid: gha-script-injection-via-attacker-controlled-context
+      - run: echo "${{ github.head_ref }}"
+
+      # ruleid: gha-script-injection-via-github-event
+      - run: |
+          echo "${{ github.event.issue.body }}"
+
+      # ok: gha-script-injection-via-github-event
+      - env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          echo "$PR_TITLE"
+
+      # ruleid: gha-unpinned-third-party-action
+      - uses: tj-actions/changed-files@v40
+
+      # ruleid: gha-unpinned-third-party-action
+      - uses: rhysd/actionlint@1.7.4
+
+      # ok: gha-unpinned-third-party-action
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      # ok: gha-unpinned-third-party-action
+      - uses: simple-container-com/actions/trufflehog-scan@main
+
+      # ruleid: gha-unpinned-first-party-action
+      - uses: actions/checkout@v4
+
+      # ok: gha-unpinned-first-party-action
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          # ruleid: gha-checkout-persist-credentials-true
+          persist-credentials: true
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          # ok: gha-checkout-persist-credentials-true
+          persist-credentials: false
+
+      # ruleid: gha-secret-echoed
+      - run: echo "${{ secrets.MY_TOKEN }}"
+
+      # ok: gha-secret-echoed
+      - env:
+          MY_TOKEN: ${{ secrets.MY_TOKEN }}
+        run: |
+          curl -H "Authorization: bearer $MY_TOKEN" https://api.example.com
+
+# ruleid: gha-permissions-write-all
+permissions: write-all
+
+# ok: gha-permissions-write-all
+permissions:
+  contents: read
+
+# Self-hosted runner detection (single-line + array form)
+# ruleid: gha-self-hosted-runner
+runs-on: self-hosted
+# ruleid: gha-self-hosted-runner
+runs-on: [self-hosted, linux]
+# ok: gha-self-hosted-runner
+runs-on: ubuntu-24.04
