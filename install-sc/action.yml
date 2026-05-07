@@ -1,0 +1,31 @@
+name: 'Install Simple Container CLI'
+description: 'Download and install the `sc` binary at a pinned version, with optional SHA256 verification. Replaces the curl-pipe install bootstrap so the consumer does not pipe remote content into a shell.'
+
+inputs:
+  version:
+    description: 'SC version, e.g. `2026.4.12`. Empty = `latest` (uses the un-versioned URL). Validated as `<major>.<minor>.<patch>` semver.'
+    required: false
+    default: ''
+  sha256:
+    description: 'OPTIONAL hex SHA256 of the tarball. When set, the download is verified before extraction. SC currently does not publish checksums; callers who want defense-in-depth can pin a SHA they computed locally.'
+    required: false
+    default: ''
+
+outputs:
+  version:
+    description: 'The version that was installed (resolved from input or `latest`).'
+    value: ${{ steps.run.outputs.version }}
+  binary:
+    description: 'Absolute path to the installed `sc` binary.'
+    value: ${{ steps.run.outputs.binary }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install sc
+      id: run
+      shell: bash
+      env:
+        SC_VERSION: ${{ inputs.version }}
+        SC_SHA256: ${{ inputs.sha256 }}
+      run: ${{ github.action_path }}/install.sh

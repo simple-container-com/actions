@@ -1,0 +1,31 @@
+name: 'Install Welder CLI'
+description: 'Download and install the `welder` binary at a pinned version, with optional SHA256 verification. Replaces the curl-pipe install bootstrap so the consumer does not pipe remote content into a shell.'
+
+inputs:
+  version:
+    description: 'Welder version, e.g. `2026.4.12`. Empty = `latest` (uses `releases/latest/...`). Validated as `<major>.<minor>.<patch>` semver.'
+    required: false
+    default: ''
+  sha256:
+    description: 'OPTIONAL hex SHA256 of the tarball. When set, the download is verified before extraction. Welder currently does not publish per-release checksums or signatures, so this is opt-in defense-in-depth.'
+    required: false
+    default: ''
+
+outputs:
+  version:
+    description: 'The version that was installed (resolved from input or `latest`).'
+    value: ${{ steps.run.outputs.version }}
+  binary:
+    description: 'Absolute path to the installed `welder` binary.'
+    value: ${{ steps.run.outputs.binary }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install welder
+      id: run
+      shell: bash
+      env:
+        WELDER_VERSION: ${{ inputs.version }}
+        WELDER_SHA256: ${{ inputs.sha256 }}
+      run: ${{ github.action_path }}/install.sh
