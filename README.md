@@ -23,6 +23,7 @@ Centralized reusable GitHub Actions workflows + composite actions for the Simple
 ├── build-semgrep-comment/             # composite — render Semgrep PR comment artifact
 ├── post-pr-comment/                   # composite — gh CLI sticky-comment poster (privileged)
 ├── semgrep-scan/                      # composite — Semgrep runner (rules + tests + run-tests.sh)
+├── notify-telegram/                   # composite — Telegram Bot API sender (token-masked)
 ├── tools/sync-tool-versions.sh        # propagate versions/Dockerfile → consumer files
 └── versions/Dockerfile                # tool image catalogue (Dependabot tracks this)
 ```
@@ -33,6 +34,7 @@ Centralized reusable GitHub Actions workflows + composite actions for the Simple
 |---|---|
 | [`install-sc`](install-sc/) | Install the `sc` CLI at a pinned version. Downloads `dist.simple-container.com/sc-<platform>-<arch>-v<version>.tar.gz`, extracts to `~/.local/bin`, adds to `$GITHUB_PATH`. Optional `sha256` input for defense-in-depth (SC does not publish checksums today). Replaces the curl-pipe install bootstrap so consumer workflows never pipe remote content into a shell. |
 | [`install-welder`](install-welder/) | Same shape for the `welder` CLI. Note: the welder dist server only publishes `latest`; passing a `version` input that doesn't resolve fails with a clear error. Optional `sha256` input. |
+| [`notify-telegram`](notify-telegram/) | Send a Telegram message via the Bot API. Token is registered with `::add-mask::` so it is redacted from any subsequent log output. Inputs are validated; text is sent as plain text (no `parse_mode`) so attacker-controlled commit messages cannot inject formatting. Replaces unpinned third-party telegram-notify actions. |
 
 Use directly from a consumer workflow:
 
@@ -43,6 +45,14 @@ Use directly from a consumer workflow:
     # sha256: 'aaaa...'   # optional, recommended once you've pinned a version
 - uses: simple-container-com/actions/install-welder@v1
 - run: sc --version && welder --version
+
+# Telegram notification (token redacted from logs):
+- uses: simple-container-com/actions/notify-telegram@v1
+  if: always()
+  with:
+    chat-id: ${{ secrets.TG_CHAT_ID }}
+    token:   ${{ secrets.TG_BOT_TOKEN }}
+    text:    "✅ Build ${{ job.status }} on ${{ github.ref_name }}"
 ```
 
 ## Reusable workflows (consumer-facing)
