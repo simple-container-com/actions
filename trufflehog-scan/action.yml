@@ -5,7 +5,7 @@ inputs:
   trufflehog-image:
     description: 'Pinned TruffleHog Docker image reference. Override only to bump the version after security review.'
     required: false
-    default: 'ghcr.io/trufflesecurity/trufflehog:3.92.4'
+    default: 'ghcr.io/trufflesecurity/trufflehog:3.95.2@sha256:49d1c4fbbc580aac487ac7cb0517bb085826bd352d7578d62bb4c0c6b7205075'
 
 outputs:
   findings-count:
@@ -36,7 +36,7 @@ runs:
       run: ${{ github.action_path }}/summary.sh
 
     - name: Upload TruffleHog results
-      uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
       with:
         name: trufflehog-results
         path: ${{ steps.run.outputs.results-file }}

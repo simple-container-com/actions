@@ -1,0 +1,27 @@
+name: Semgrep Self-Test
+
+# Self-scan: validate the SC ruleset against fixtures and against this repo
+# itself. Runs on every PR/push to main. The reusable workflow (semgrep.yml)
+# is for *consumer* repos; this one tests the rules-as-data here.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  rule-tests:
+    name: Semgrep rule tests + self-scan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run rule-validation suite
+        run: semgrep-scan/run-tests.sh

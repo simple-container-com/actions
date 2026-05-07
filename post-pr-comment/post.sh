@@ -7,11 +7,12 @@ set -euo pipefail
 
 : "${GH_TOKEN:?GH_TOKEN must be set}"
 : "${REPO:?REPO must be set (owner/repo)}"
-: "${MARKER:?MARKER must be set}"
+: "${MARKER_INPUT:?MARKER_INPUT must be set}"
 : "${ARTIFACT_DIR:?ARTIFACT_DIR must be set}"
 
 BODY_FILE="$ARTIFACT_DIR/body.md"
 PR_FILE="$ARTIFACT_DIR/pr-number.txt"
+MARKER_FILE="$ARTIFACT_DIR/marker.txt"
 
 if [ ! -f "$BODY_FILE" ] || [ ! -f "$PR_FILE" ]; then
   echo '::warning::pr-comment artifact missing — skipping comment.'
@@ -28,6 +29,24 @@ fi
 PR_NUMBER="$(tr -d '[:space:]' < "$PR_FILE")"
 if ! printf '%s' "$PR_NUMBER" | grep -qE '^[1-9][0-9]*$'; then
   echo "::error::Invalid PR number in artifact: '$PR_NUMBER'"
+  exit 1
+fi
+
+# Marker resolution: artifact's marker.txt wins if present and well-formed.
+MARKER="$MARKER_INPUT"
+if [ -f "$MARKER_FILE" ]; then
+  marker_from_artifact="$(head -n 1 "$MARKER_FILE" | tr -d '\r')"
+  if printf '%s' "$marker_from_artifact" | grep -qE '^## [A-Za-z0-9 ()._/+&,:-]+$'; then
+    MARKER="$marker_from_artifact"
+  else
+    echo "::warning::marker.txt content rejected (not a Markdown H2 header), falling back to input marker."
+  fi
+fi
+
+# Marker must be a Markdown H2 header (literal `## ...`) with a safe charset
+# so it cannot smuggle metacharacters into a jq string.
+if ! printf '%s' "$MARKER" | grep -qE '^## [A-Za-z0-9 ()._/+&,:-]+$'; then
+  echo "::error::Marker '$MARKER' is not a safe '## Heading' string."
   exit 1
 fi
 

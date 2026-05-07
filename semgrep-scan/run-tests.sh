@@ -1,23 +1,25 @@
 #!/usr/bin/env bash
-# Validate the custom Semgrep rules in .semgrep/rules/ against the
-# fixture files in .semgrep/tests/. For each `# ruleid: <id>` marker we
-# expect a finding for that rule on the next non-comment line. For each
-# `# ok: <id>` we expect NO finding for that rule on the next non-comment
-# line. Exits non-zero on any deviation.
+# Validate the Semgrep rules in semgrep-scan/rules/ against the fixture
+# files in semgrep-scan/tests/. For each `# ruleid: <id>` marker we expect
+# a finding for that rule on the next non-comment line. For each `# ok: <id>`
+# we expect NO finding on the next non-comment line. Exits non-zero on any
+# deviation, then runs the full ruleset against the whole repo and asserts
+# zero findings.
 #
-# This script is the "test" entrypoint — invoked from the lint workflow.
+# Invoked from the semgrep-self-test workflow.
 set -euo pipefail
 
-: "${SEMGREP_IMAGE:=semgrep/semgrep:1.161.0}"
+: "${SEMGREP_IMAGE:=semgrep/semgrep:1.161.0@sha256:326e5f41cc972bb423b764a14febbb62bbad29ee1c01820805d077dd868fea48}"
 
-if ! printf '%s' "$SEMGREP_IMAGE" | grep -qE '^[a-zA-Z0-9._/-]+:[A-Za-z0-9._-]+$'; then
+if ! printf '%s' "$SEMGREP_IMAGE" | grep -qE '^[a-zA-Z0-9._/-]+:[A-Za-z0-9._-]+(@sha256:[a-f0-9]{64})?$'; then
   echo "::error::Refusing SEMGREP_IMAGE='$SEMGREP_IMAGE'"
   exit 1
 fi
 
-REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-RULES_DIR="$REPO_ROOT/.semgrep/rules"
-TESTS_DIR="$REPO_ROOT/.semgrep/tests"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+RULES_DIR="$SCRIPT_DIR/rules"
+TESTS_DIR="$SCRIPT_DIR/tests"
 
 # Pair each test fixture with its rules file by basename.
 declare -A pairs=(
@@ -93,10 +95,10 @@ docker run --rm \
   -w /src \
   "$SEMGREP_IMAGE" \
   semgrep scan \
-  --config .semgrep/rules/ \
+  --config semgrep-scan/rules/ \
   --metrics=off \
   --error \
-  --exclude=.semgrep/tests
+  --exclude=semgrep-scan/tests
 
 if [ "$failed" -ne 0 ]; then
   echo '::error::Semgrep rule tests failed.'

@@ -5,7 +5,7 @@ inputs:
   syft-image:
     description: 'Pinned Syft Docker image reference. Override only to bump the version after security review.'
     required: false
-    default: 'ghcr.io/anchore/syft:v1.40.1'
+    default: 'ghcr.io/anchore/syft:v1.44.0@sha256:86fde6445b483d902fe011dd9f68c4987dd94e07da1e9edc004e3c2422650de6'
 
 outputs:
   sbom-file:
@@ -26,7 +26,7 @@ runs:
       run: ${{ github.action_path }}/generate.sh
 
     - name: Upload SBOM
-      uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
       with:
         name: sbom-cyclonedx
         path: ${{ steps.run.outputs.sbom-file }}

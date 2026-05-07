@@ -1,0 +1,69 @@
+name: 'Semgrep Scan'
+description: 'Run Semgrep with the SC custom ruleset (and optionally consumer-supplied rules) against the workspace. Pinned image; never executes scanned code.'
+
+inputs:
+  semgrep-image:
+    description: 'Pinned Semgrep Docker image reference. Override only to bump the version after security review.'
+    required: false
+    default: 'semgrep/semgrep:1.161.0@sha256:326e5f41cc972bb423b764a14febbb62bbad29ee1c01820805d077dd868fea48'
+  consumer-rules:
+    description: 'Path inside the consumer repo to additional Semgrep rules to merge with the SC ruleset (e.g. ".semgrep/rules"). Empty to use SC rules only.'
+    required: false
+    default: ''
+  registry-packs:
+    description: 'Comma-separated list of Semgrep registry pack identifiers (e.g. "p/security-audit,p/python") to include. Empty by default — registry packs are mutable upstream and should be opted in deliberately.'
+    required: false
+    default: ''
+  fail-on-severity:
+    description: 'Lowest severity that fails the action (ERROR / WARNING / INFO). Default ERROR.'
+    required: false
+    default: 'ERROR'
+
+outputs:
+  errors:
+    description: 'Number of ERROR-severity findings.'
+    value: ${{ steps.run.outputs.errors }}
+  warnings:
+    description: 'Number of WARNING-severity findings.'
+    value: ${{ steps.run.outputs.warnings }}
+  infos:
+    description: 'Number of INFO-severity findings.'
+    value: ${{ steps.run.outputs.infos }}
+  total:
+    description: 'Total number of findings.'
+    value: ${{ steps.run.outputs.total }}
+  results-file:
+    description: 'Path to the Semgrep JSON results file on the runner.'
+    value: ${{ steps.run.outputs.results-file }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Run Semgrep
+      id: run
+      shell: bash
+      env:
+        SEMGREP_IMAGE: ${{ inputs.semgrep-image }}
+        CONSUMER_RULES: ${{ inputs.consumer-rules }}
+        REGISTRY_PACKS: ${{ inputs.registry-packs }}
+        FAIL_ON_SEVERITY: ${{ inputs.fail-on-severity }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: ${{ github.action_path }}/scan.sh
+
+    - name: Add step summary
+      shell: bash
+      env:
+        ERRORS: ${{ steps.run.outputs.errors }}
+        WARNINGS: ${{ steps.run.outputs.warnings }}
+        INFOS: ${{ steps.run.outputs.infos }}
+        TOTAL: ${{ steps.run.outputs.total }}
+        RESULTS_FILE: ${{ steps.run.outputs.results-file }}
+      run: ${{ github.action_path }}/summary.sh
+
+    - name: Upload Semgrep results
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      with:
+        name: semgrep-results
+        path: ${{ steps.run.outputs.results-file }}
+        retention-days: 7
+        if-no-files-found: ignore

@@ -1,0 +1,28 @@
+version: 2
+
+# Dependabot tracks first-party `actions/*` references in our reusable
+# workflows and composite actions, and opens PRs to bump them by SHA.
+#
+# Tool Docker images (TruffleHog, Syft, Trivy, Grype, Semgrep, actionlint,
+# shellcheck) live as `image:tag@sha256:...` strings inside shell scripts;
+# Dependabot does not parse those today, so they are bumped manually as
+# part of a periodic security review (see README — "Bumping tool versions").
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: deps
+      include: scope
+    groups:
+      actions-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch

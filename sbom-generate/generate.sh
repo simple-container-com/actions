@@ -7,7 +7,7 @@ set -euo pipefail
 : "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE must be set (provided by GitHub runner)}"
 : "${GITHUB_OUTPUT:?GITHUB_OUTPUT must be set (provided by GitHub runner)}"
 
-if ! printf '%s' "$SYFT_IMAGE" | grep -qE '^[a-zA-Z0-9._/-]+:[A-Za-z0-9._-]+$'; then
+if ! printf '%s' "$SYFT_IMAGE" | grep -qE '^[a-zA-Z0-9._/-]+:[A-Za-z0-9._-]+(@sha256:[a-f0-9]{64})?$'; then
   echo "::error::Refusing to use SYFT_IMAGE='$SYFT_IMAGE' — not a plain image:tag reference."
   exit 1
 fi

@@ -6,40 +6,50 @@ Centralized **reusable GitHub Actions workflows + composite actions** for the Si
 
 ```
 .
-├── .github/workflows/
-│   ├── security-scan.yml           # workflow_call — orchestrator
-│   ├── security-scan-comment.yml   # workflow_call — privileged comment poster
-│   ├── lint.yml                    # actionlint + shellcheck on every PR
-│   └── semgrep.yml                 # custom semgrep ruleset + rule tests
-├── trufflehog-scan/                # composite action — TruffleHog filesystem scan
-├── sbom-generate/                  # composite action — Syft → CycloneDX SBOM
-├── sbom-scan/                      # composite action — Trivy + Grype against SBOM
-├── build-pr-comment/               # composite action — render comment body to artifact
-├── post-pr-comment/                # composite action — gh CLI sticky-comment poster
-└── .semgrep/
-    ├── rules/                      # custom Semgrep rules (shell + GHA)
-    ├── tests/                      # fixture files validating each rule
-    └── run-tests.sh                # rule-test runner used in CI
+├── .github/
+│   ├── workflows/
+│   │   ├── security-scan.yml         # workflow_call — TruffleHog + Syft + Trivy + Grype
+│   │   ├── security-scan-comment.yml # workflow_call — sticky PR comment for security-scan
+│   │   ├── semgrep.yml               # workflow_call — Semgrep with SC ruleset
+│   │   ├── semgrep-comment.yml       # workflow_call — sticky PR comment for semgrep
+│   │   ├── lint.yml                  # self — actionlint + shellcheck
+│   │   └── semgrep-self-test.yml     # self — runs semgrep-scan/run-tests.sh
+│   └── dependabot.yml                # weekly bumps for github-actions ecosystem
+├── trufflehog-scan/                  # composite — TruffleHog filesystem scan
+├── sbom-generate/                    # composite — Syft → CycloneDX SBOM
+├── sbom-scan/                        # composite — Trivy + Grype against SBOM
+├── build-pr-comment/                 # composite — render security-scan PR comment
+├── build-semgrep-comment/            # composite — render Semgrep PR comment
+├── post-pr-comment/                  # composite — gh CLI sticky-comment poster
+└── semgrep-scan/                     # composite — Semgrep runner
+    ├── action.yml
+    ├── scan.sh
+    ├── summary.sh
+    ├── rules/                        # SC custom Semgrep ruleset
+    ├── tests/                        # rule-fixture tests
+    └── run-tests.sh                  # rule-validation suite
 ```
 
-Every composite action ships its own `.sh` script alongside its `action.yml`, so the heavy logic is testable, lintable, and Semgrep-scannable in isolation. The workflow YAML stays a thin orchestrator.
+Every composite action ships its own `.sh` script alongside its `action.yml`, so the heavy logic is testable, lintable, and Semgrep-scannable in isolation. The reusable workflow YAML stays a thin orchestrator.
 
 ## Why composite actions for the heavy lifting
 
 This repo is private. A reusable `workflow_call` workflow runs on the consumer's runner, but the consumer's `GITHUB_TOKEN` is scoped to the consumer repo — it cannot `actions/checkout` this private repo to read its `scripts/` directory. **Composite actions** are the clean way to ship `.sh` files alongside YAML: GitHub fetches a composite action's directory using its own internal mechanism, regardless of whether the action's repo is private (provided org-level Actions access is granted).
 
-## Workflows
+## Reusable workflows (consumer-facing)
 
-| Workflow | Purpose | Trigger in consumer |
+| Workflow | Purpose | Trigger in consumer wrapper |
 |---|---|---|
-| [`security-scan.yml`](.github/workflows/security-scan.yml) | TruffleHog → Syft → Trivy + Grype, render PR comment artifact, status gate | `pull_request`, `push` |
-| [`security-scan-comment.yml`](.github/workflows/security-scan-comment.yml) | Downloads the PR comment artifact and posts/updates a sticky comment | `workflow_run` |
+| [`security-scan.yml`](.github/workflows/security-scan.yml) | TruffleHog → Syft → Trivy + Grype, render comment artifact, status gate | `pull_request`, `push` |
+| [`security-scan-comment.yml`](.github/workflows/security-scan-comment.yml) | Posts/updates sticky comment for security-scan results | `workflow_run` |
+| [`semgrep.yml`](.github/workflows/semgrep.yml) | Semgrep with SC ruleset (and optional consumer rules / registry packs), comment artifact, status gate | `pull_request`, `push` |
+| [`semgrep-comment.yml`](.github/workflows/semgrep-comment.yml) | Posts/updates sticky comment for Semgrep results | `workflow_run` |
 
-The split is deliberate: the scan workflow runs in **PR context** (read-only token, no secrets — safe for fork PRs) and uploads a pre-rendered comment body as an artifact. The comment workflow runs in **base-repo context** (privileged token) but never touches PR code — it only reads the artifact. This is the [GitHub Security Lab pattern for preventing pwn requests](https://securitylab.github.com/research/github-actions-preventing-pwn-requests/).
+Each scan workflow uses `pull_request` (not `pull_request_target`), so fork PRs receive a read-only `GITHUB_TOKEN` and the workflow never sees org secrets. The privileged comment workflows run via `workflow_run` in the **base-repo context** but never read PR code — they consume only the rendered comment artifact. This is the [GitHub Security Lab pattern for preventing pwn requests](https://securitylab.github.com/research/github-actions-preventing-pwn-requests/).
 
 ## How to consume
 
-Add **two** workflows to the consumer repo.
+Each consumer repo adds **four** thin wrapper workflows.
 
 ### `.github/workflows/security-scan.yml`
 
@@ -80,7 +90,51 @@ jobs:
       actions: read
 ```
 
-The `workflows: ["Security Scan"]` value must match the `name:` of the consumer's scan workflow exactly.
+### `.github/workflows/semgrep.yml`
+
+```yaml
+name: Semgrep
+on:
+  push: { branches: [main] }
+  pull_request: { branches: [main] }
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  semgrep:
+    uses: simple-container-com/actions/.github/workflows/semgrep.yml@main
+    permissions:
+      contents: read
+    # Optional inputs:
+    # with:
+    #   consumer-rules: '.semgrep/rules'      # additional rules in your repo
+    #   registry-packs: 'p/security-audit'    # comma-separated semgrep registry packs
+    #   fail-on-severity: 'ERROR'             # ERROR / WARNING / INFO
+```
+
+### `.github/workflows/semgrep-comment.yml`
+
+```yaml
+name: Semgrep Comment
+on:
+  workflow_run:
+    workflows: ["Semgrep"]
+    types: [completed]
+permissions:
+  contents: read
+  pull-requests: write
+  actions: read
+jobs:
+  comment:
+    if: github.event.workflow_run.event == 'pull_request'
+    uses: simple-container-com/actions/.github/workflows/semgrep-comment.yml@main
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
+```
+
+The `workflows: [...]` value in each comment workflow must match the `name:` of the consumer's scan workflow exactly.
 
 ## Org access
 
@@ -95,19 +149,43 @@ gh api -X PUT repos/simple-container-com/actions/actions/permissions/access \
 
 The workflows are designed assuming the consumer is a **public repo** that may receive PRs from external forks.
 
-- **Untrusted PR code is never executed.** No `npm install`, no `go build`, no test runs. Tools (TruffleHog, Syft, Trivy, Grype) are file/SBOM analyzers only.
-- **Secrets are never exposed to PR-controlled code.** The scan job uses `pull_request` (not `pull_request_target`) so fork PRs receive a read-only `GITHUB_TOKEN` and no org secrets.
+- **Untrusted PR code is never executed.** No `npm install`, no `go build`, no test runs. Tools (TruffleHog, Syft, Trivy, Grype, Semgrep) are file/AST/SBOM analyzers only.
+- **Secrets are never exposed to PR-controlled code.** Scan jobs use `pull_request` (not `pull_request_target`) so fork PRs receive a read-only `GITHUB_TOKEN` and no org secrets.
 - **PR-controlled strings are never inlined into shell.** PR title, body, branch, etc. are passed through `env:` vars and validated where they reach commands. Each `.sh` script asserts its inputs match a strict regex before use.
-- **Third-party actions are pinned by 40-char commit SHA.** Only first-party `actions/*` is used; the SHA is recorded with a `# vN` trailing comment for readability.
-- **Tool images are pinned by version tag.** TruffleHog, Syft, Trivy, Grype run as Docker containers from upstream registries — no `curl ... | sh` installers.
-- **Image references are validated.** Every `.sh` script that runs `docker run` first asserts the image reference matches `^[a-zA-Z0-9._/-]+:[A-Za-z0-9._-]+$` before passing it to docker.
-- **Comment posting cannot read PR code.** The privileged comment job runs on `workflow_run` and consumes only the rendered artifact.
+- **Third-party action surface is minimal and pinned.** Only first-party `actions/*` is used (checkout, upload-artifact, download-artifact). Each is referenced by full 40-char commit SHA with a `# vN` trailing comment for readability.
+- **Tool Docker images are pinned by tag AND `@sha256` digest.** A digest is immutable; even if upstream re-publishes the same tag, the runner pulls the bytes we audited.
+- **Image references are validated.** Every `.sh` script that runs `docker run` first asserts the image reference matches `^[a-zA-Z0-9._/-]+:[A-Za-z0-9._-]+(@sha256:[a-f0-9]{64})?$` before passing it to docker.
+- **Comment posting cannot read PR code.** The privileged comment workflows run on `workflow_run` and consume only the rendered comment artifact.
+
+## Third-party action / tool audit
+
+This repo intentionally minimises external dependencies.
+
+| Kind | Reference | Why we use it | Removable? |
+|---|---|---|---|
+| Action | `actions/checkout@de0fac2…` (v6.0.2) | First-party. Required for any workflow that needs the workspace. | No |
+| Action | `actions/upload-artifact@043fb46…` (v7.0.1) | First-party. The mechanism for cross-job/cross-workflow data passing. | No |
+| Action | `actions/download-artifact@3e5f45b…` (v8.0.1) | First-party. Pair of upload-artifact. | No |
+| Image | `ghcr.io/trufflesecurity/trufflehog:3.95.2@sha256:49d1c4f…` | Secret scanner — no first-party alternative. | No |
+| Image | `ghcr.io/anchore/syft:v1.44.0@sha256:86fde64…` | SBOM generator — pairs with Grype/Trivy. | No |
+| Image | `ghcr.io/anchore/grype:v0.112.0@sha256:391bfda…` | Vuln scanner against SBOM (Anchore side). | No |
+| Image | `public.ecr.aws/aquasecurity/trivy:0.70.0@sha256:be1190a…` | Vuln scanner (Aqua side). Run alongside Grype to cross-check. | No |
+| Image | `semgrep/semgrep:1.161.0@sha256:326e5f4…` | SAST engine — required by the user's choice of tool. | No |
+| Image | `rhysd/actionlint:1.7.12@sha256:b1934ee…` | The de-facto GitHub Actions linter (catches expression issues GitHub itself doesn't). | No |
+| Image | `koalaman/shellcheck:v0.11.0@sha256:61862eb…` | The de-facto shell linter. | No |
+
+There are **no** third-party `uses:` actions. Every action is from the first-party `actions/*` org owned by GitHub. Every Docker image is the canonical upstream of the tool we picked, pinned by tag **and** sha256 digest.
+
+### Bumping tool versions
+
+- **Actions** (`actions/*`) are bumped automatically by Dependabot — see [`.github/dependabot.yml`](.github/dependabot.yml). Weekly check; minor + patch grouped into a single PR.
+- **Docker images** are bumped manually because Dependabot doesn't parse `image:tag@sha256:...` strings inside shell scripts. Process: re-resolve the latest stable tag and digest, edit the `default:` value in the relevant `action.yml`, run `semgrep-scan/run-tests.sh` locally, open a PR.
 
 ## Custom Semgrep rules
 
-The `.semgrep/rules/` ruleset runs against this repo on every PR (`semgrep.yml` workflow). It catches mistakes that `actionlint` and `shellcheck` miss.
+The [`semgrep-scan/rules/`](semgrep-scan/rules/) ruleset ships with the `semgrep-scan` composite action. It runs in this repo via [`semgrep-self-test.yml`](.github/workflows/semgrep-self-test.yml), and in any consumer that uses the [`semgrep.yml`](.github/workflows/semgrep.yml) reusable workflow.
 
-### Shell rules — [`.semgrep/rules/shell.yml`](.semgrep/rules/shell.yml)
+### Shell rules — [`semgrep-scan/rules/shell.yml`](semgrep-scan/rules/shell.yml)
 
 | ID | Severity | Detects |
 |---|---|---|
@@ -117,7 +195,7 @@ The `.semgrep/rules/` ruleset runs against this repo on every PR (`semgrep.yml` 
 | `shell-source-of-variable-path` | WARNING | `source $VAR` / `. ${VAR}/...` — RCE if attacker controls VAR |
 | `shell-cat-without-double-dash` | INFO | `cat "$F"` (use `cat -- "$F"` so leading-dash filenames don't smuggle flags) |
 
-### GitHub Actions rules — [`.semgrep/rules/github-actions.yml`](.semgrep/rules/github-actions.yml)
+### GitHub Actions rules — [`semgrep-scan/rules/github-actions.yml`](semgrep-scan/rules/github-actions.yml)
 
 | ID | Severity | Detects |
 |---|---|---|
@@ -133,12 +211,12 @@ The `.semgrep/rules/` ruleset runs against this repo on every PR (`semgrep.yml` 
 
 ### Tests
 
-[`.semgrep/run-tests.sh`](.semgrep/run-tests.sh) runs each rule against [`.semgrep/tests/`](.semgrep/tests/) fixtures and asserts that every `# ruleid: <id>` marker matches and every `# ok: <id>` marker doesn't. It then runs the rules against the whole repo and asserts zero findings. Wired into `semgrep.yml` so a broken rule fails CI.
+[`semgrep-scan/run-tests.sh`](semgrep-scan/run-tests.sh) runs each rule against [`semgrep-scan/tests/`](semgrep-scan/tests/) fixtures and asserts that every `# ruleid: <id>` marker matches and every `# ok: <id>` marker doesn't. It then runs the rules against the whole repo and asserts zero findings. Wired into [`semgrep-self-test.yml`](.github/workflows/semgrep-self-test.yml) so a broken rule fails CI.
 
 Run it locally:
 
 ```bash
-.semgrep/run-tests.sh
+semgrep-scan/run-tests.sh
 ```
 
 ## Roadmap
@@ -147,7 +225,7 @@ Planned for follow-up PRs:
 
 - Cosign / SLSA artifact signing
 - Signature verification on the consume side
-- More Semgrep rules as they prove their worth (e.g., explicit allowlist for `${{ env.X }}` interpolation in `run:`)
+- More Semgrep rules as patterns prove their worth
 - Wiring private SC repos once the public-repo design is proven
 
 ## Versioning

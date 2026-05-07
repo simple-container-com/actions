@@ -11,7 +11,7 @@ set -euo pipefail
 # Validate that the image reference matches a known-safe shape: registry/path:tag.
 # This is defence-in-depth — the action input default is hard-coded — but the
 # input is overridable, so reject anything that isn't a plain image:tag.
-if ! printf '%s' "$TRUFFLEHOG_IMAGE" | grep -qE '^[a-zA-Z0-9._/-]+:[A-Za-z0-9._-]+$'; then
+if ! printf '%s' "$TRUFFLEHOG_IMAGE" | grep -qE '^[a-zA-Z0-9._/-]+:[A-Za-z0-9._-]+(@sha256:[a-f0-9]{64})?$'; then
   echo "::error::Refusing to use TRUFFLEHOG_IMAGE='$TRUFFLEHOG_IMAGE' — not a plain image:tag reference."
   exit 1
 fi

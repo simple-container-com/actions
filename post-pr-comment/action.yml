@@ -1,15 +1,19 @@
 name: 'Post PR Comment from Artifact'
-description: 'Download a pr-comment-body artifact from an upstream workflow_run and post or update a sticky PR comment via gh CLI. Privileged step — never reads PR code.'
+description: 'Download a pre-rendered comment artifact from an upstream workflow_run and post or update a sticky PR comment via gh CLI. Privileged step — never reads PR code.'
 
 inputs:
   workflow-run-id:
-    description: 'ID of the upstream workflow run that uploaded pr-comment-body.'
+    description: 'ID of the upstream workflow run that uploaded the comment artifact.'
     required: true
   github-token:
     description: 'GITHUB_TOKEN with pull-requests:write and actions:read.'
     required: true
+  artifact-name:
+    description: 'Name of the artifact uploaded by the upstream workflow.'
+    required: false
+    default: 'pr-comment-body'
   marker:
-    description: 'Marker string used to find the existing sticky comment.'
+    description: 'Marker string used to find an existing sticky comment to update. If the artifact contains a marker.txt file its contents take precedence.'
     required: false
     default: '## Security Scan Results'
 
@@ -17,9 +21,9 @@ runs:
   using: 'composite'
   steps:
     - name: Download PR comment artifact
-      uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16  # v4.1.8
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
       with:
-        name: pr-comment-body
+        name: ${{ inputs.artifact-name }}
         path: pr-comment
         run-id: ${{ inputs.workflow-run-id }}
         github-token: ${{ inputs.github-token }}
@@ -29,6 +33,6 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         REPO: ${{ github.repository }}
-        MARKER: ${{ inputs.marker }}
+        MARKER_INPUT: ${{ inputs.marker }}
         ARTIFACT_DIR: ${{ github.workspace }}/pr-comment
       run: ${{ github.action_path }}/post.sh

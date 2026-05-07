@@ -8,11 +8,11 @@ inputs:
   trivy-image:
     description: 'Pinned Trivy Docker image reference.'
     required: false
-    default: 'public.ecr.aws/aquasecurity/trivy:0.68.2'
+    default: 'public.ecr.aws/aquasecurity/trivy:0.70.0@sha256:be1190afcb28352bfddc4ddeb71470835d16462af68d310f9f4bca710961a41e'
   grype-image:
     description: 'Pinned Grype Docker image reference.'
     required: false
-    default: 'ghcr.io/anchore/grype:v0.106.0'
+    default: 'ghcr.io/anchore/grype:v0.112.0@sha256:391bfda62888fb4e98ff5c4c81598f7431a3c1eac3f8519d69d1ff00df247c1d'
 
 outputs:
   trivy-total:
@@ -70,7 +70,7 @@ runs:
       run: ${{ github.action_path }}/summary.sh
 
     - name: Upload vulnerability scan results
-      uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
       with:
         name: vulnerability-scan-results
         path: |

@@ -14,7 +14,7 @@ set -euo pipefail
 # Validate image refs.
 for img_var in TRIVY_IMAGE GRYPE_IMAGE; do
   img_val="${!img_var}"
-  if ! printf '%s' "$img_val" | grep -qE '^[a-zA-Z0-9._/-]+:[A-Za-z0-9._-]+$'; then
+  if ! printf '%s' "$img_val" | grep -qE '^[a-zA-Z0-9._/-]+:[A-Za-z0-9._-]+(@sha256:[a-f0-9]{64})?$'; then
     echo "::error::Refusing to use $img_var='$img_val' — not a plain image:tag reference."
     exit 1
   fi
