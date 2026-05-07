@@ -24,8 +24,12 @@ SC_SHA256="${SC_SHA256:-}"
 
 # --- Validate inputs ---------------------------------------------------
 if [ -n "$SC_VERSION" ]; then
-  if ! printf '%s' "$SC_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-    echo "::error::SC version must match semver X.Y.Z, got: '$SC_VERSION'"
+  # `X.Y.Z` plus optional pre-release suffix `-foo.bar.123` (alphanumerics,
+  # dots, hyphens). Matches plain semver and the calver-with-suffix tags
+  # branch-preview publishes (e.g. `2026.4.12-preview.abc1234`). Rejects
+  # shell-control characters and other dangerous content.
+  if ! printf '%s' "$SC_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$'; then
+    echo "::error::SC version must match X.Y.Z[-prerelease], got: '$SC_VERSION'"
     exit 1
   fi
 fi
