@@ -6,6 +6,10 @@ inputs:
     description: 'Pinned TruffleHog Docker image reference. Override only to bump the version after security review.'
     required: false
     default: 'ghcr.io/trufflesecurity/trufflehog:3.95.2@sha256:49d1c4fbbc580aac487ac7cb0517bb085826bd352d7578d62bb4c0c6b7205075'
+  extra-excludes:
+    description: 'Additional path patterns (one regex per line) to add to TruffleHog''s --exclude-paths file, beyond the built-in `\.sc/secrets\.yaml` and `\.sc/stacks/[^/]+/secrets\.yaml`. TruffleHog uses Go regex (NOT glob) and substring-matches against the full path (e.g. `/repo/...`); leading `^` anchors are usually wrong. Use `\.` for literal dot, `[^/]+` for one path segment, `.*` for anything. Examples: `docs/.*\.md$`, `/testdata/`, `_test\.go$`. Lines containing shell-control characters (`;`, `&`, backtick, `$(`) or control bytes are rejected.'
+    required: false
+    default: ''
 
 outputs:
   findings-count:
@@ -26,6 +30,7 @@ runs:
       shell: bash
       env:
         TRUFFLEHOG_IMAGE: ${{ inputs.trufflehog-image }}
+        EXTRA_EXCLUDES: ${{ inputs.extra-excludes }}
       run: ${{ github.action_path }}/scan.sh
 
     - name: Add step summary

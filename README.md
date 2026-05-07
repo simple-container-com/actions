@@ -27,6 +27,24 @@ Centralized reusable GitHub Actions workflows + composite actions for the Simple
 └── versions/Dockerfile                # tool image catalogue (Dependabot tracks this)
 ```
 
+## Composite actions (also consumer-facing)
+
+| Action | Purpose |
+|---|---|
+| [`install-sc`](install-sc/) | Install the `sc` CLI at a pinned version. Downloads `dist.simple-container.com/sc-<platform>-<arch>-v<version>.tar.gz`, extracts to `~/.local/bin`, adds to `$GITHUB_PATH`. Optional `sha256` input for defense-in-depth (SC does not publish checksums today). Replaces the curl-pipe install bootstrap so consumer workflows never pipe remote content into a shell. |
+| [`install-welder`](install-welder/) | Same shape for the `welder` CLI. Note: the welder dist server only publishes `latest`; passing a `version` input that doesn't resolve fails with a clear error. Optional `sha256` input. |
+
+Use directly from a consumer workflow:
+
+```yaml
+- uses: simple-container-com/actions/install-sc@v1
+  with:
+    version: '2026.4.12'
+    # sha256: 'aaaa...'   # optional, recommended once you've pinned a version
+- uses: simple-container-com/actions/install-welder@v1
+- run: sc --version && welder --version
+```
+
 ## Reusable workflows (consumer-facing)
 
 | Workflow | Purpose | Trigger in consumer |
@@ -162,6 +180,22 @@ These rules are enforced by [`lint.yml`](.github/workflows/lint.yml), [`semgrep-
 - Every rule has at least one `# ruleid:` and one `# ok:` fixture in [`semgrep-scan/tests/`](semgrep-scan/tests/).
 - The full ruleset must produce **zero** findings on the repo itself (excluding `semgrep-scan/{rules,tests}` which are deliberately scan targets / negative cases).
 - New rule = new commit that adds rule + fixtures + passes [`semgrep-scan/run-tests.sh`](semgrep-scan/run-tests.sh).
+
+**Secret-scan FP handling — fix at source, exclude only as last resort**
+- This actions repo is **public**. Any path pattern listed in a `secret-scan-extra-excludes` value (anywhere in the org) is a hint to attackers about which paths the scanner skips. Default to fixing the source instead.
+- Universal detector exclude: `--exclude-detectors=FormBucket`. That detector matches generic Go SDK symbols (`sdk.Bool`, `sdk.BoolPtr`) with extreme FP rate; no SC repo legitimately uses formbucket.com APIs.
+- Source-level fixes (preferred): replace placeholder credentials with syntax that defeats the detector regex AND keeps the docs/tests valid. Avoid preserving provider-specific token prefixes (`ghp_`, `sk-`, `xoxb-`), JWT-like multi-part shapes, full PEM armor, or parseable URI userinfo with realistic credential slots. TruffleHog also scans **decoded base64**, so an "innocuous" base64 fixture can still trigger after decoding.
+  - URIs: `mongodb+srv://user:pass@host` → `mongodb+srv://<USER>:<PASS>@<host>` (angle brackets break the alphanumeric password match)
+  - GCP service-account emails: `name@project.iam.gserviceaccount.com` → `<service-account>@<project>.iam.gserviceaccount.com`
+  - Random-looking tokens (Cloudflare / Mailgun / Gitlab): replace value with `<your-token>` literal
+- Inline ignore (good for tests with comment syntax): `# trufflehog:ignore` (Python/YAML/shell) or `// trufflehog:ignore` (Go/JS/etc.) at the end of the line tells TruffleHog to skip that line. Confirmed empirically with TruffleHog 3.95. Best fit for test fixtures that need format-preserving values but where a comment is welcome.
+- Path exclusion (last resort): `secret-scan-extra-excludes` input on `security-scan.yml`. One regex per line, TruffleHog Go-regex semantics, substring-matched against the full container path. Use only for files that admit no comment syntax (raw OpenSSH key bodies, base64 blobs, etc.).
+  ```yaml
+  secret-scan-extra-excludes: |
+    /testdata/.*\.ssh/test_id_rsa$
+  ```
+  Default exclusions remain `\.sc/secrets\.yaml` and `\.sc/stacks/[^/]+/secrets\.yaml`.
+- Validation rejects lines containing shell-control characters (`;`, `&`, backtick, `$(`) or control bytes. Regex metacharacters are allowed.
 
 ## Threat model
 

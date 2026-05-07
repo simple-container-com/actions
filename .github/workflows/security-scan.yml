@@ -26,6 +26,21 @@ on:
         required: false
         default: true
         type: boolean
+      secret-scan-extra-excludes:
+        description: |
+          Additional path patterns (one Go regex per line) appended to
+          TruffleHog's --exclude-paths file, beyond the built-in
+          `\.sc/secrets\.yaml` and `\.sc/stacks/[^/]+/secrets\.yaml`.
+          TruffleHog uses Go regex (NOT glob), substring-matched against
+          the full container path. Use only as a last resort for fixtures
+          whose format must remain intact (e.g. raw OpenSSH key bodies);
+          prefer source-level placeholder replacement or inline
+          `trufflehog:ignore` comments when the file format permits.
+          Lines containing shell-control characters or control bytes are
+          rejected.
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: security-scan-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
@@ -52,6 +67,8 @@ jobs:
       - name: TruffleHog scan
         id: scan
         uses: simple-container-com/actions/trufflehog-scan@main
+        with:
+          extra-excludes: ${{ inputs.secret-scan-extra-excludes }}
 
   sbom-scan:
     name: SBOM + Dependency Scan

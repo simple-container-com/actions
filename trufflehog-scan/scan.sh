@@ -28,11 +28,46 @@ mkdir -p "$SCAN_ROOT"
 git archive HEAD | tar -x -C "$SCAN_ROOT"
 
 # Exclude SC encrypted secrets — these are ciphertext managed by Simple
-# Container, not leaked credentials. Glob is interpreted by TruffleHog.
+# Container, not leaked credentials. TruffleHog's --exclude-paths takes
+# Go regex patterns (NOT globs); each is substring-matched against the
+# full file path the scanner sees (e.g. `/repo/.sc/secrets.yaml`), so
+# patterns are intentionally UNanchored — they match the relevant
+# fragment anywhere in the path.
 {
-  echo '.sc/secrets.yaml'
-  echo '.sc/stacks/*/secrets.yaml'
+  echo '\.sc/secrets\.yaml'
+  echo '\.sc/stacks/[^/]+/secrets\.yaml'
 } > "$EXCLUDE_FILE"
+
+# Append consumer-supplied extra excludes (one regex per line).
+# TruffleHog patterns are Go regex, not glob — use `\.` for literal
+# dot, `[^/]+` for "one path segment", `.*` for "anything". Patterns
+# are substring-matched against the full path the scanner sees, so
+# leading `^` anchors are usually wrong (the container path begins
+# with `/repo/`); end-anchor `$` works fine.
+# Examples:
+#   docs/.*\.md$           (md files anywhere under docs/)
+#   /testdata/             (any path containing /testdata/)
+#   _test\.go$             (Go test files)
+#
+# Validation REJECTS lines containing shell-control characters
+# (`;`, `&`, backtick, `$(`) or control bytes as defence-in-depth.
+# Regex metacharacters are otherwise allowed.
+if [ -n "${EXTRA_EXCLUDES:-}" ]; then
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    [ -z "$line" ] && continue
+    case "$line" in \#*) continue ;; esac
+    if printf '%s' "$line" | LC_ALL=C grep -qE '[`;&]|\$\('; then
+      echo "::error::EXTRA_EXCLUDES line contains shell-control characters: '$line'"
+      exit 1
+    fi
+    if printf '%s' "$line" | LC_ALL=C grep -qP '[\x00-\x1f]'; then
+      echo "::error::EXTRA_EXCLUDES line contains control characters: '$line'"
+      exit 1
+    fi
+    printf '%s\n' "$line" >> "$EXCLUDE_FILE"
+  done <<< "$EXTRA_EXCLUDES"
+fi
 
 # Run TruffleHog inside Docker. Mount source read-only; mount exclude file
 # read-only. We must distinguish three cases:
@@ -51,6 +86,7 @@ docker run --rm \
   --json \
   --no-update \
   --exclude-paths=/exclude-paths.txt \
+  --exclude-detectors=FormBucket \
   > "$RESULTS_FILE" 2> "$docker_log"
 exit_code=$?
 set -e
