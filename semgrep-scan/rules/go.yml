@@ -1,0 +1,151 @@
+rules:
+  # ====================================================================
+  # 1. tls.Config{InsecureSkipVerify: true} — disables TLS server-cert
+  #    verification, MITM-trivial. Allowed in *_test.go (testing TLS
+  #    setup is normal); ERROR everywhere else.
+  # ====================================================================
+  - id: go-tls-insecure-skip-verify
+    languages: [go]
+    severity: ERROR
+    message: >-
+      `tls.Config{InsecureSkipVerify: true}` disables TLS certificate
+      verification — any active network attacker can MITM the connection.
+      Pin the expected server certificate / CA via `RootCAs`, or rely on
+      the system trust store. If you genuinely need to skip (rare,
+      explainable), use `crypto/tls`'s `VerifyConnection` for a custom
+      check rather than disabling all verification.
+    pattern-either:
+      - pattern: |
+          &tls.Config{
+            ...,
+            InsecureSkipVerify: true,
+            ...,
+          }
+      - pattern: |
+          tls.Config{
+            ...,
+            InsecureSkipVerify: true,
+            ...,
+          }
+    paths:
+      include:
+        - "**/*.go"
+      exclude:
+        - "**/*_test.go"
+    metadata:
+      category: security
+      cwe: "CWE-295: Improper Certificate Validation"
+      owasp: "A07:2021 - Identification and Authentication Failures"
+
+  # ====================================================================
+  # 2. math/rand for security-relevant variable names. We can't trace
+  #    data-flow into TLS / token-issuance APIs from a regex pattern,
+  #    so we approximate via the destination variable's name. False-
+  #    positives are low because variables called `token`, `secret`,
+  #    `apikey`, etc. are almost never assigned non-cryptographic random.
+  # ====================================================================
+  - id: go-math-rand-for-security
+    languages: [go]
+    severity: WARNING
+    message: >-
+      `math/rand` is NOT cryptographically secure (it's a deterministic
+      PRNG seeded from time). Use `crypto/rand` for tokens, secrets,
+      session IDs, OTPs, or anything an attacker shouldn't predict.
+    patterns:
+      - pattern-either:
+          - pattern: $X = rand.$F(...)
+          - pattern: $X := rand.$F(...)
+      - metavariable-regex:
+          metavariable: $X
+          regex: '(?i)(token|secret|password|passwd|apikey|api_key|nonce|salt|csrf|session|otp|seed|uuid|signing|signature)'
+    paths:
+      include:
+        - "**/*.go"
+      exclude:
+        - "**/*_test.go"
+    metadata:
+      category: security
+      cwe: "CWE-338: Use of Cryptographically Weak PRNG"
+
+  # ====================================================================
+  # 3. SQL query built by string concatenation — classic SQLi vector.
+  #    Restricted to obvious cases on `Query` / `Exec` family methods
+  #    receiving a string + variable. Parameterised queries (`?`/`$1`)
+  #    pass the string literal verbatim and bind via varargs — those
+  #    don't match.
+  # ====================================================================
+  - id: go-sql-query-string-concat
+    languages: [go]
+    severity: ERROR
+    message: >-
+      Building a SQL query by `+`-concatenation is SQL injection. Use
+      parameterised queries: `db.Query("... WHERE x = ?", x)` or
+      `db.QueryContext(ctx, "... WHERE x = $1", x)`. Most Go SQL
+      libraries do binding for you when you pass parameters separately.
+    pattern-either:
+      - pattern: $DB.Query($Q + $X, ...)
+      - pattern: $DB.Query($X + $Q, ...)
+      - pattern: $DB.QueryContext($CTX, $Q + $X, ...)
+      - pattern: $DB.QueryContext($CTX, $X + $Q, ...)
+      - pattern: $DB.Exec($Q + $X, ...)
+      - pattern: $DB.Exec($X + $Q, ...)
+      - pattern: $DB.ExecContext($CTX, $Q + $X, ...)
+      - pattern: $DB.ExecContext($CTX, $X + $Q, ...)
+    paths:
+      include:
+        - "**/*.go"
+      exclude:
+        - "**/*_test.go"
+    metadata:
+      category: security
+      cwe: "CWE-89: SQL Injection"
+      owasp: "A03:2021 - Injection"
+
+  # ====================================================================
+  # 4. RSA key size below 2048. NIST has been recommending ≥2048 since
+  #    SP 800-131A; 1024-bit RSA is considered factor-able by sufficiently
+  #    motivated attackers.
+  # ====================================================================
+  - id: go-rsa-weak-key-size
+    languages: [go]
+    severity: ERROR
+    message: >-
+      RSA keys smaller than 2048 bits do not meet NIST SP 800-131A
+      guidance. Use 2048 or 3072 bits. Prefer Ed25519 (constant-time,
+      smaller keys) for new systems.
+    pattern-either:
+      - pattern: rsa.GenerateKey($RAND, 512)
+      - pattern: rsa.GenerateKey($RAND, 1024)
+    paths:
+      include:
+        - "**/*.go"
+    metadata:
+      category: security
+      cwe: "CWE-326: Inadequate Encryption Strength"
+
+  # ====================================================================
+  # 5. Deprecated symmetric ciphers — DES, 3DES, RC4 — used as
+  #    block-cipher constructors. (MD5 / SHA-1 are intentionally NOT
+  #    flagged here because they are still legitimate for non-security
+  #    use cases like checksums and content-addressing; flagging them
+  #    everywhere is too noisy. A separate, narrower rule keyed off
+  #    `crypto/hmac` or signing usage would be the right home.)
+  # ====================================================================
+  - id: go-deprecated-cipher
+    languages: [go]
+    severity: ERROR
+    message: >-
+      DES / 3DES / RC4 are broken or deprecated for confidentiality
+      protection. Use AES-GCM (`crypto/cipher.NewGCM`) or
+      ChaCha20-Poly1305 for AEAD. If you need a stream cipher, ChaCha20
+      is the correct choice.
+    pattern-either:
+      - pattern: des.NewCipher(...)
+      - pattern: des.NewTripleDESCipher(...)
+      - pattern: rc4.NewCipher(...)
+    paths:
+      include:
+        - "**/*.go"
+    metadata:
+      category: security
+      cwe: "CWE-327: Use of Broken or Risky Cryptographic Algorithm"

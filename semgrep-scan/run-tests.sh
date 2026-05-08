@@ -25,6 +25,7 @@ TESTS_DIR="$SCRIPT_DIR/tests"
 declare -A pairs=(
   ["$RULES_DIR/shell.yml"]="$TESTS_DIR/shell.bash"
   ["$RULES_DIR/github-actions.yml"]="$TESTS_DIR/.github/workflows/cases.yml"
+  ["$RULES_DIR/go.yml"]="$TESTS_DIR/go_cases.go"
 )
 
 failed=0
@@ -54,11 +55,12 @@ findings = {(r["check_id"].split(".")[-1], r["start"]["line"], r["end"]["line"])
 text = pathlib.Path(fixture_path).read_text().splitlines()
 expected = []
 for i, line in enumerate(text, 1):
-    m = re.match(r'\s*#\s*(ruleid|ok):\s*([\w-]+)\b', line)
+    # Accept Python/YAML/shell `#` comments AND C/Go/JS `//` comments.
+    m = re.match(r'\s*(?:#|//)\s*(ruleid|ok):\s*([\w-]+)\b', line)
     if not m: continue
     kind, rid = m.group(1), m.group(2)
     target = i + 1
-    while target <= len(text) and (text[target-1].lstrip().startswith("#") or not text[target-1].strip()):
+    while target <= len(text) and (text[target-1].lstrip().startswith(("#", "//")) or not text[target-1].strip()):
         target += 1
     expected.append((rid, kind, target))
 
