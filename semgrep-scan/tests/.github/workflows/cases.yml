@@ -115,6 +115,11 @@ jobs:
   secret-echo-cases:
     runs-on: ubuntu-24.04
     steps:
+      # The whole-file regex for rule 16 anchors at `on:` (top of file)
+      # and ends at the first non-GITHUB_TOKEN secret reference (this
+      # line). So a positive `# ruleid:` marker for rule 16 must point
+      # at a line inside that range — easiest target is right here.
+      # ruleid: gha-pull-request-uses-non-token-secret
       # ruleid: gha-secret-echoed
       - run: echo "${{ secrets.MY_TOKEN }}"
 
@@ -223,3 +228,76 @@ example-bad-comment-post:
 example-good-comment-post:
   # ok: gha-comment-body-via-argv
   run: jq -n --rawfile body body.md '{body:$body}' | gh api -X POST repos/o/r/issues/42/comments --input -
+
+# Rule 16 (gha-pull-request-uses-non-token-secret) is exercised by the
+# marker stacked above `secrets.MY_TOKEN` in `secret-echo-cases` above —
+# the whole-file regex's range ends at the FIRST non-GITHUB_TOKEN secret,
+# so the only viable target inside the range is that line.
+
+# Rule 17 — BuildKit privileged entitlement.
+buildx-cases:
+  runs-on: ubuntu-24.04
+  steps:
+    - uses: docker/setup-buildx-action@2c0aaecbeac2dd4d2eaaeac0bb066e9aaa5d9da7
+      with:
+        # ruleid: gha-buildkit-insecure-entitlement
+        buildkitd-flags: --allow-insecure-entitlement security.insecure
+
+    - uses: docker/setup-buildx-action@2c0aaecbeac2dd4d2eaaeac0bb066e9aaa5d9da7
+      with:
+        # ruleid: gha-buildkit-insecure-entitlement
+        buildkitd-flags: --allow-insecure-entitlement network.host
+
+    - uses: docker/setup-buildx-action@2c0aaecbeac2dd4d2eaaeac0bb066e9aaa5d9da7
+      with:
+        # ok: gha-buildkit-insecure-entitlement
+        driver-opts: image=moby/buildkit:buildx-stable-1
+
+# Rule 18 — token interpolated into a URL's userinfo.
+token-in-url-cases:
+  runs-on: ubuntu-24.04
+  steps:
+    # ruleid: gha-github-token-in-url
+    - run: git remote set-url origin https://${{ secrets.GITHUB_TOKEN }}@github.com/o/r.git
+
+    # ruleid: gha-github-token-in-url
+    - run: git push https://x-access-token:${{ secrets.PERSONAL_ACCESS_TOKEN }}@github.com/o/r main
+
+    # ruleid: gha-github-token-in-url
+    - run: curl -fsSL https://${{ secrets.MY_PAT }}@example.com/api
+
+    # Interpolation but not in URL userinfo — must not fire.
+    # ok: gha-github-token-in-url
+    - run: gh auth login --with-token <<< "${{ secrets.GITHUB_TOKEN }}"
+
+    # Interpolation embedded into a URL's path/query is NOT credential
+    # leakage — also must not fire.
+    # ok: gha-github-token-in-url
+    - run: curl -fsSL "https://example.com/api?ref=${{ github.head_ref }}"
+
+# Rule 19 — actions/checkout step without persist-credentials.
+checkout-no-persist-cases:
+  runs-on: ubuntu-24.04
+  steps:
+    # No `with:` block → defaults to true. Must fire.
+    # ruleid: gha-checkout-missing-persist-credentials-false
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+    # `with:` present but no persist-credentials key. Must fire.
+    # ruleid: gha-checkout-missing-persist-credentials-false
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        fetch-depth: 1
+
+    # Explicit `false` → must NOT fire (rule 19 is the omit-case).
+    # The existing `gha-checkout-persist-credentials-true` rule already
+    # covers explicit `true`; rule 19 should not double-flag it either.
+    # ok: gha-checkout-missing-persist-credentials-false
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        persist-credentials: false
+
+    # ok: gha-checkout-missing-persist-credentials-false
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        persist-credentials: true

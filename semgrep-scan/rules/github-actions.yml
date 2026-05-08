@@ -331,3 +331,124 @@ rules:
         - "**/*.bash"
     metadata:
       category: best-practice
+
+  # ====================================================================
+  # 16. `pull_request` workflow that touches a non-GITHUB_TOKEN secret —
+  #     PPE / CICD-SEC-4. `pull_request` runs with secrets exposed to PR
+  #     code (incl. fork PRs once the maintainer approves the first run).
+  #     Any `secrets.X` reference other than the auto-issued GITHUB_TOKEN
+  #     is exfiltratable. Split into a secret-less PR scan job +
+  #     workflow_run-triggered privileged comment job.
+  #
+  #     Anchors `pull_request` (not `_target`) and any `secrets.*` use,
+  #     either order in the file. Whole-file regex.
+  # ====================================================================
+  - id: gha-pull-request-uses-non-token-secret
+    languages: [yaml]
+    severity: ERROR
+    message: >-
+      This workflow triggers on `pull_request` AND references a non-
+      GITHUB_TOKEN secret. Any contributor who can open a PR can exfil
+      that secret (CICD-SEC-4). Move secret-using steps to a `push` /
+      `workflow_dispatch` / `workflow_run` job; keep the PR-triggered
+      job read-only.
+    pattern-either:
+      # `pull_request` first, then secret.
+      - pattern-regex: '(?ms)^on:[\s\S]{0,4000}?\bpull_request(?![_-]target)\b[\s\S]{1,30000}?\$\{\{\s*secrets\.(?!(?:GITHUB_TOKEN|github_token)\s*\}\})[A-Za-z_][A-Za-z0-9_]*\s*\}\}'
+      # Secret first, then `pull_request` (rare — `on:` near top is normal but defenders can be tidy).
+      - pattern-regex: '(?ms)\$\{\{\s*secrets\.(?!(?:GITHUB_TOKEN|github_token)\s*\}\})[A-Za-z_][A-Za-z0-9_]*\s*\}\}[\s\S]{1,30000}?^on:[\s\S]{0,4000}?\bpull_request(?![_-]target)\b'
+    paths:
+      include:
+        - "**/.github/workflows/*.yml"
+        - "**/.github/workflows/*.yaml"
+    metadata:
+      category: security
+      cwe: "CWE-538: Insertion of Sensitive Information into Externally-Accessible File or Directory"
+      reference: "https://owasp.org/www-project-top-10-ci-cd-security-risks/CICD-SEC-04"
+
+  # ====================================================================
+  # 17. BuildKit privileged entitlement at build time. `security.insecure`
+  #     gives RUN steps CAP_SYS_ADMIN + write access to the host kernel
+  #     interfaces; `network.host` shares the host network namespace.
+  #     Both let a malicious dep escape the build sandbox. Removing them
+  #     is the default; needing one is a strong code-smell.
+  # ====================================================================
+  - id: gha-buildkit-insecure-entitlement
+    languages: [yaml]
+    severity: ERROR
+    message: >-
+      `--allow-insecure-entitlement <security.insecure|network.host>`
+      grants build-time RUN steps near-host privileges. A malicious dep
+      pulled during build can pivot to the runner. Remove the flag;
+      restructure the Dockerfile if a build step truly needs it.
+    pattern-regex: '--allow-insecure-entitlement\s+(security\.insecure|network\.host)'
+    paths:
+      include:
+        - "**/.github/workflows/*.yml"
+        - "**/.github/workflows/*.yaml"
+        - "**/action.yml"
+        - "**/action.yaml"
+    metadata:
+      category: security
+      cwe: "CWE-269: Improper Privilege Management"
+      reference: "https://docs.docker.com/build/buildkit/configure/#allow-insecure-entitlements"
+
+  # ====================================================================
+  # 18. Token interpolation inside a URL's userinfo segment — leaks the
+  #     token into git's reflog, process listing (ps), build logs, and
+  #     any HTTP redirect target. Use git's `extraheader` config or
+  #     env-var-only auth instead.
+  # ====================================================================
+  - id: gha-github-token-in-url
+    languages: [yaml]
+    severity: ERROR
+    message: >-
+      Embedding `${{ secrets.*TOKEN* }}` between `://` and `@` writes
+      the token into command-line args, git remote config, and any
+      redirected URL. Replace with `git -c http.extraheader="AUTHORIZATION: bearer $TOKEN"`
+      or rely on `actions/checkout`'s persisted credentials for git ops.
+    pattern-regex: '://[A-Za-z0-9_:.\-]*\$\{\{\s*secrets\.[A-Za-z_][A-Za-z0-9_]*(?:TOKEN|token|PAT|pat)[A-Za-z0-9_]*\s*\}\}@'
+    paths:
+      include:
+        - "**/.github/workflows/*.yml"
+        - "**/.github/workflows/*.yaml"
+        - "**/action.yml"
+        - "**/action.yaml"
+    metadata:
+      category: security
+      cwe: "CWE-532: Insertion of Sensitive Information into Log File"
+
+  # ====================================================================
+  # 19. `actions/checkout` step that omits `persist-credentials:`. The
+  #     default is `true` — token gets written into `.git/config` for
+  #     every later step in the job. Complement to rule #7
+  #     (`gha-checkout-persist-credentials-true`, fires on the explicit-
+  #     true form). This rule fires when the safe form is silently
+  #     omitted.
+  #
+  #     Implementation: match the checkout `uses:` line, then walk body
+  #     lines (each indented deeper than `- ` and not starting a sibling
+  #     step). The repeat ends as soon as ANY body line mentions
+  #     `persist-credentials:` (so explicit true / false suppresses the
+  #     match). For the rule to fire, the post-loop position must be a
+  #     sibling step or EOF — i.e., we walked the whole step body without
+  #     ever seeing `persist-credentials:`.
+  # ====================================================================
+  - id: gha-checkout-missing-persist-credentials-false
+    languages: [yaml]
+    severity: WARNING
+    message: >-
+      `actions/checkout` defaults to `persist-credentials: true`, which
+      writes GITHUB_TOKEN into `.git/config` for every later step. Set
+      `persist-credentials: false` explicitly unless a later step in the
+      same job needs to `git push` and you accept the risk.
+    pattern-regex: '(?ms)uses:\s+["'']?actions/checkout@[^\n]*(?:\n(?![ \t]+- )(?![ \t]+persist-credentials:)(?:[ \t]+[^\n]*|[ \t]*)){0,30}(?=\n[ \t]+- |\Z)'
+    paths:
+      include:
+        - "**/.github/workflows/*.yml"
+        - "**/.github/workflows/*.yaml"
+        - "**/action.yml"
+        - "**/action.yaml"
+    metadata:
+      category: security
+      cwe: "CWE-538: Insertion of Sensitive Information into Externally-Accessible File or Directory"
