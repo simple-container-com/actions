@@ -58,6 +58,21 @@ rules:
       - metavariable-regex:
           metavariable: $X
           regex: '(?i)(token|secret|password|passwd|apikey|api_key|nonce|salt|csrf|session|otp|seed|uuid|signing|signature)'
+      # Require the file to import `math/rand`. Without this, a project
+      # that only imports `crypto/rand` and writes the perfectly-secure
+      # `token, _ := rand.Int(rand.Reader, max)` would still match the
+      # `rand.$F(...)` pattern above and get incorrectly flagged.
+      - pattern-either:
+          - pattern-inside: |
+              import "math/rand"
+              ...
+          - pattern-inside: |
+              import (
+                ...
+                "math/rand"
+                ...
+              )
+              ...
     paths:
       include:
         - "**/*.go"
@@ -82,15 +97,24 @@ rules:
       parameterised queries: `db.Query("... WHERE x = ?", x)` or
       `db.QueryContext(ctx, "... WHERE x = $1", x)`. Most Go SQL
       libraries do binding for you when you pass parameters separately.
-    pattern-either:
-      - pattern: $DB.Query($Q + $X, ...)
-      - pattern: $DB.Query($X + $Q, ...)
-      - pattern: $DB.QueryContext($CTX, $Q + $X, ...)
-      - pattern: $DB.QueryContext($CTX, $X + $Q, ...)
-      - pattern: $DB.Exec($Q + $X, ...)
-      - pattern: $DB.Exec($X + $Q, ...)
-      - pattern: $DB.ExecContext($CTX, $Q + $X, ...)
-      - pattern: $DB.ExecContext($CTX, $X + $Q, ...)
+    patterns:
+      - pattern-either:
+          - pattern: $DB.Query($Q + $X, ...)
+          - pattern: $DB.Query($X + $Q, ...)
+          - pattern: $DB.QueryContext($CTX, $Q + $X, ...)
+          - pattern: $DB.QueryContext($CTX, $X + $Q, ...)
+          - pattern: $DB.Exec($Q + $X, ...)
+          - pattern: $DB.Exec($X + $Q, ...)
+          - pattern: $DB.ExecContext($CTX, $Q + $X, ...)
+          - pattern: $DB.ExecContext($CTX, $X + $Q, ...)
+      # Splitting a long SQL string across two literals for readability
+      # (`db.Query("SELECT a, b " + "FROM foo")`) is benign — no
+      # attacker-controlled fragment. Reject the pure literal+literal
+      # form so we don't fire ERROR-severity SQLi on it.
+      - pattern-not: $DB.Query("..." + "...", ...)
+      - pattern-not: $DB.QueryContext($CTX, "..." + "...", ...)
+      - pattern-not: $DB.Exec("..." + "...", ...)
+      - pattern-not: $DB.ExecContext($CTX, "..." + "...", ...)
     paths:
       include:
         - "**/*.go"

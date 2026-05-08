@@ -75,6 +75,11 @@ func nonSecurityRandom() int {
 	return jitter
 }
 
+// crypto/rand sometimes imported as the default `rand` alias —
+// `token, _ := rand.Int(rand.Reader, max)` is the SECURE pattern,
+// must NOT match. The math-rand-import gate prevents the FP.
+// (Negative test for codex P2.)
+
 // --------------------------------------------------------------------
 // go-sql-query-string-concat
 // --------------------------------------------------------------------
@@ -92,6 +97,16 @@ func sqlBadExec(db *sql.DB, id string) {
 func sqlGood(db *sql.DB, name string) {
 	// ok: go-sql-query-string-concat
 	_, _ = db.Query("SELECT * FROM users WHERE name = $1", name)
+}
+
+// Splitting a long SQL string across two literals for readability is
+// benign — neither operand is attacker-controlled. Negative test for
+// codex P2.
+func sqlLongLiteral(db *sql.DB) {
+	// ok: go-sql-query-string-concat
+	_, _ = db.Query("SELECT a, b, c " + "FROM long_table_name WHERE x IS NOT NULL")
+	// ok: go-sql-query-string-concat
+	_, _ = db.Exec("UPDATE foo SET y = 1 " + "WHERE z = 2")
 }
 
 // --------------------------------------------------------------------
