@@ -14,19 +14,17 @@ rules:
       the system trust store. If you genuinely need to skip (rare,
       explainable), use `crypto/tls`'s `VerifyConnection` for a custom
       check rather than disabling all verification.
-    pattern-either:
-      - pattern: |
-          &tls.Config{
-            ...,
-            InsecureSkipVerify: true,
-            ...,
-          }
-      - pattern: |
-          tls.Config{
-            ...,
-            InsecureSkipVerify: true,
-            ...,
-          }
+    # Listing both `&tls.Config{...}` and bare `tls.Config{...}`
+    # produced duplicate findings on a single site because the
+    # bare-form pattern also matches the composite literal nested
+    # inside `&`. Bare-form (value, never addressed) is also vanishingly
+    # rare — only the pointer form is needed.
+    pattern: |
+      &tls.Config{
+        ...,
+        InsecureSkipVerify: true,
+        ...,
+      }
     paths:
       include:
         - "**/*.go"
@@ -58,10 +56,11 @@ rules:
       - metavariable-regex:
           metavariable: $X
           regex: '(?i)(token|secret|password|passwd|apikey|api_key|nonce|salt|csrf|session|otp|seed|uuid|signing|signature)'
-      # Require the file to import `math/rand`. Without this, a project
-      # that only imports `crypto/rand` and writes the perfectly-secure
-      # `token, _ := rand.Int(rand.Reader, max)` would still match the
-      # `rand.$F(...)` pattern above and get incorrectly flagged.
+      # Require the file to import `math/rand`. Without this gate, a
+      # project that only imports `crypto/rand` and writes the
+      # perfectly-secure `token, _ := rand.Int(rand.Reader, max)`
+      # would still match the `rand.$F(...)` pattern above and get
+      # incorrectly flagged.
       - pattern-either:
           - pattern-inside: |
               import "math/rand"
@@ -73,6 +72,14 @@ rules:
                 ...
               )
               ...
+      # Exclude the crypto/rand call shape: `rand.Int(rand.Reader, ...)`
+      # / `rand.Read(...)` / `rand.Prime(rand.Reader, ...)`. crypto/rand
+      # always passes its `rand.Reader` as the first argument, while
+      # math/rand never does. This catches the mixed-import case where
+      # both `math/rand` AND `crypto/rand` are imported (one under an
+      # alias) and the actual call is the crypto path.
+      - pattern-not: $X = rand.$F(rand.Reader, ...)
+      - pattern-not: $X := rand.$F(rand.Reader, ...)
     paths:
       include:
         - "**/*.go"
@@ -197,14 +204,16 @@ rules:
       - pattern-either:
           - pattern: rds.NewInstance(...)
           - pattern: rds.NewCluster(...)
-      # Look for the field name anywhere in the match text. This is
-      # robust whether the args are passed as an inline struct literal
-      # `&rds.InstanceArgs{...}` or as a pre-built variable; the only
-      # requirement is that `StorageEncrypted` appears textually
-      # inside the call expression. False-positive risk: a call that
-      # passes a variable whose definition (elsewhere) sets the field
-      # — that's a known limitation, kept simple over multi-step.
-      - pattern-not-regex: 'StorageEncrypted'
+      # Suppress only when `StorageEncrypted` is explicitly set to a
+      # truthy value. Two forms are accepted:
+      #   * `StorageEncrypted: pulumi.Bool(true)` / `sdk.Bool(true)` /
+      #     anything that ends `.Bool(true)` (the canonical Pulumi shape)
+      #   * bare `StorageEncrypted: true` (less idiomatic but valid)
+      # Important: setting the field to `false` (or `pulumi.Bool(false)`,
+      # or any non-true value) does NOT suppress — we want to flag those
+      # explicitly-disabled cases, not let them through.
+      - pattern-not-regex: 'StorageEncrypted:\s*\w+\.Bool\(true\)'
+      - pattern-not-regex: 'StorageEncrypted:\s*true\b'
     paths:
       include:
         - "**/*.go"

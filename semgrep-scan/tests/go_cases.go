@@ -30,8 +30,12 @@ func tlsBad() *tls.Config {
 	}
 }
 
-func tlsBadValue() tls.Config {
-	// ruleid: go-tls-insecure-skip-verify
+// Bare-value `tls.Config{...}` (never addressed) is vanishingly rare
+// in practice and the bare-form pattern was producing duplicate findings
+// on `&tls.Config{...}` (codex P3). Rule scope was narrowed to the
+// pointer form only; this is now a negative test.
+func tlsBareValue() tls.Config {
+	// ok: go-tls-insecure-skip-verify
 	return tls.Config{
 		InsecureSkipVerify: true,
 	}
@@ -200,6 +204,18 @@ func rdsOkCluster(ctx *pulumiCtx) {
 	_ = rds.NewCluster(ctx, "cluster2", &clusterArgs{
 		Engine:           "aurora-postgresql",
 		StorageEncrypted: true,
+	})
+}
+
+// Codex P2: explicitly setting `StorageEncrypted: false` (or
+// `pulumi.Bool(false)`) must STILL fire — the field name being
+// present isn't enough. Both forms of the bare-bool value are
+// covered below.
+func rdsExplicitlyDisabledBool(ctx *pulumiCtx) {
+	// ruleid: go-aws-rds-no-storage-encryption
+	_ = rds.NewInstance(ctx, "db3", &instanceArgs{
+		Engine:           "postgres",
+		StorageEncrypted: false,
 	})
 }
 
