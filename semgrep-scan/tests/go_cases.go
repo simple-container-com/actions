@@ -219,6 +219,57 @@ func rdsExplicitlyDisabledBool(ctx *pulumiCtx) {
 	})
 }
 
+// Runtime-config opt-in shape: `<ptr>.Bool(lo.FromPtr(<*bool>))`.
+// Used in simple-container-com/api for legacy-safe migration; paired
+// with `IgnoreChanges([]string{"storageEncrypted"})` on the opts (not
+// shown — pairing isn't regex-verified). Must NOT fire.
+type pulumiSdk struct{}
+
+func (pulumiSdk) Bool(_ bool) bool { return false }
+
+var sdk = pulumiSdk{}
+var pulumi = pulumiSdk{}
+
+type loPkg struct{}
+
+func (loPkg) FromPtr(_ *bool) bool { return false }
+
+var lo = loPkg{}
+
+type dbConfigShape struct{ StorageEncrypted *bool }
+
+func rdsRuntimeOptInSdk(ctx *pulumiCtx) {
+	cfg := dbConfigShape{}
+	// ok: go-aws-rds-no-storage-encryption
+	_ = rds.NewInstance(ctx, "db4", &instanceArgs{
+		Engine:           "postgres",
+		StorageEncrypted: sdk.Bool(lo.FromPtr(cfg.StorageEncrypted)),
+	})
+}
+
+// Same shape with `pulumi.Bool` prefix — must also NOT fire.
+func rdsRuntimeOptInPulumi(ctx *pulumiCtx) {
+	cfg := dbConfigShape{}
+	// ok: go-aws-rds-no-storage-encryption
+	_ = rds.NewCluster(ctx, "cluster3", &clusterArgs{
+		Engine:           "aurora-postgresql",
+		StorageEncrypted: pulumi.Bool(lo.FromPtr(cfg.StorageEncrypted)),
+	})
+}
+
+// Negative guard: a `<ptr>.Bool(<arbitrary expr>)` that ISN'T
+// `lo.FromPtr(...)` must not bypass the rule (we only carve out the
+// specific runtime-config helper, not any wrapper). Must FIRE.
+func rdsArbitraryWrapperStillFires(ctx *pulumiCtx) {
+	// ruleid: go-aws-rds-no-storage-encryption
+	_ = rds.NewInstance(ctx, "db5", &instanceArgs{
+		Engine:           "postgres",
+		StorageEncrypted: sdk.Bool(someRuntimeBool()),
+	})
+}
+
+func someRuntimeBool() bool { return false }
+
 // --------------------------------------------------------------------
 // go-fmt-errorf-percent-v-for-error
 // --------------------------------------------------------------------
