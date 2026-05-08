@@ -14,6 +14,7 @@ import (
 	"crypto/tls"
 	cryptorand "crypto/rand"
 	"database/sql"
+	"fmt"
 	mathrand "math/rand"
 )
 
@@ -139,4 +140,104 @@ func deprecatedCiphers() {
 	_, _ = des.NewTripleDESCipher(append(key, key...))
 	// ruleid: go-deprecated-cipher
 	_, _ = rc4.NewCipher(key)
+}
+
+// --------------------------------------------------------------------
+// go-aws-rds-no-storage-encryption
+// --------------------------------------------------------------------
+//
+// Surrogate types matching the shape of the pulumi-aws-sdk so the
+// AST patterns line up. Semgrep doesn't compile the file — only the
+// surface syntax matters.
+
+type pulumiCtx struct{}
+
+type instanceArgs struct {
+	Engine           string
+	StorageEncrypted bool
+	AllocatedStorage int
+}
+
+type clusterArgs struct {
+	Engine           string
+	StorageEncrypted bool
+}
+
+var rds = struct {
+	NewInstance func(*pulumiCtx, string, *instanceArgs) error
+	NewCluster  func(*pulumiCtx, string, *clusterArgs) error
+}{
+	NewInstance: func(_ *pulumiCtx, _ string, _ *instanceArgs) error { return nil },
+	NewCluster:  func(_ *pulumiCtx, _ string, _ *clusterArgs) error { return nil },
+}
+
+func rdsBad(ctx *pulumiCtx) {
+	// ruleid: go-aws-rds-no-storage-encryption
+	_ = rds.NewInstance(ctx, "db1", &instanceArgs{
+		Engine:           "postgres",
+		AllocatedStorage: 20,
+	})
+}
+
+func rdsBadCluster(ctx *pulumiCtx) {
+	// ruleid: go-aws-rds-no-storage-encryption
+	_ = rds.NewCluster(ctx, "cluster1", &clusterArgs{
+		Engine: "aurora-postgresql",
+	})
+}
+
+func rdsOk(ctx *pulumiCtx) {
+	// ok: go-aws-rds-no-storage-encryption
+	_ = rds.NewInstance(ctx, "db2", &instanceArgs{
+		Engine:           "postgres",
+		StorageEncrypted: true,
+		AllocatedStorage: 20,
+	})
+}
+
+func rdsOkCluster(ctx *pulumiCtx) {
+	// ok: go-aws-rds-no-storage-encryption
+	_ = rds.NewCluster(ctx, "cluster2", &clusterArgs{
+		Engine:           "aurora-postgresql",
+		StorageEncrypted: true,
+	})
+}
+
+// --------------------------------------------------------------------
+// go-fmt-errorf-percent-v-for-error
+// --------------------------------------------------------------------
+
+func errfBadEnd(err error) error {
+	// ruleid: go-fmt-errorf-percent-v-for-error
+	return fmt.Errorf("failed to read: %v", err)
+}
+
+func errfBadCustomName(myErr error) error {
+	// ruleid: go-fmt-errorf-percent-v-for-error
+	return fmt.Errorf("downstream call: %v", myErr)
+}
+
+func errfBadCapitalised(readErr error) error {
+	// ruleid: go-fmt-errorf-percent-v-for-error
+	return fmt.Errorf("read: %v", readErr)
+}
+
+func errfOkPercentW(err error) error {
+	// ok: go-fmt-errorf-percent-v-for-error
+	return fmt.Errorf("failed to read: %w", err)
+}
+
+// `%v` is fine for non-error values; only the error-shaped trailing
+// arg is the antipattern. Negative test.
+func errfOkNonError(n int) error {
+	// ok: go-fmt-errorf-percent-v-for-error
+	return fmt.Errorf("invalid count: %v", n)
+}
+
+// Mixed `%v ... %w` — the LAST verb is `%w`, so the error IS wrapped.
+// Current rule keys off `%v"$` (string ends with %v) so this pattern
+// is not flagged. Negative test.
+func errfMixedVW(err error) error {
+	// ok: go-fmt-errorf-percent-v-for-error
+	return fmt.Errorf("ctx %v failed: %w", "details", err)
 }

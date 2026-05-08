@@ -173,3 +173,78 @@ rules:
     metadata:
       category: security
       cwe: "CWE-327: Use of Broken or Risky Cryptographic Algorithm"
+
+  # ====================================================================
+  # 6. Pulumi AWS — RDS instance / Aurora cluster without
+  #    StorageEncrypted. AWS RDS defaults to UNENCRYPTED storage at
+  #    rest unless `StorageEncrypted: pulumi.Bool(true)` is set in
+  #    InstanceArgs / ClusterArgs. CIS AWS Foundations Benchmark RDS.3
+  #    requires encryption-at-rest. Encryption is also a one-shot
+  #    decision: it cannot be enabled on an existing instance without
+  #    snapshot-restore. Add the field at creation, ideally with a
+  #    customer-managed `KmsKeyId`.
+  # ====================================================================
+  - id: go-aws-rds-no-storage-encryption
+    languages: [go]
+    severity: ERROR
+    message: >-
+      AWS RDS / Aurora resources default to UNENCRYPTED storage unless
+      `StorageEncrypted: pulumi.Bool(true)` is set on creation
+      (CIS AWS Foundations RDS.3). Encryption cannot be enabled on
+      an existing instance without a snapshot-restore — set it at
+      creation time, ideally with a customer-managed `KmsKeyId`.
+    patterns:
+      - pattern-either:
+          - pattern: rds.NewInstance(...)
+          - pattern: rds.NewCluster(...)
+      # Look for the field name anywhere in the match text. This is
+      # robust whether the args are passed as an inline struct literal
+      # `&rds.InstanceArgs{...}` or as a pre-built variable; the only
+      # requirement is that `StorageEncrypted` appears textually
+      # inside the call expression. False-positive risk: a call that
+      # passes a variable whose definition (elsewhere) sets the field
+      # — that's a known limitation, kept simple over multi-step.
+      - pattern-not-regex: 'StorageEncrypted'
+    paths:
+      include:
+        - "**/*.go"
+      exclude:
+        - "**/*_test.go"
+    metadata:
+      category: security
+      cwe: "CWE-311: Missing Encryption of Sensitive Data"
+      cis: "AWS Foundations RDS.3"
+
+  # ====================================================================
+  # 7. fmt.Errorf with `%v` instead of `%w` for an error — loses the
+  #    wrap chain that `errors.Is` / `errors.As` rely on. Go 1.13+
+  #    idiom is `%w`. Detection heuristic: the format string ENDS in
+  #    `%v` (so it's the rightmost verb) AND the corresponding arg's
+  #    name looks like an error variable.
+  # ====================================================================
+  - id: go-fmt-errorf-percent-v-for-error
+    languages: [go]
+    severity: WARNING
+    message: >-
+      Use `%w` to wrap an error in `fmt.Errorf` (Go 1.13+). `%v`
+      formats the error's text but DROPS the wrap chain — `errors.Is`
+      and `errors.As` then cannot unwrap to the original sentinel or
+      typed error. Replace `fmt.Errorf("...%v", err)` with
+      `fmt.Errorf("...%w", err)`.
+    patterns:
+      - pattern-either:
+          - pattern: fmt.Errorf($S, $E)
+          - pattern: fmt.Errorf($S, $A, $E)
+          - pattern: fmt.Errorf($S, $A, $B, $E)
+      - metavariable-regex:
+          metavariable: $S
+          regex: '^"[^"]*%v"$'
+      - metavariable-regex:
+          metavariable: $E
+          regex: '^[a-zA-Z_]*[Ee]rr(or)?$'
+    paths:
+      include:
+        - "**/*.go"
+    metadata:
+      category: best-practice
+      reference: "https://go.dev/blog/go1.13-errors"
