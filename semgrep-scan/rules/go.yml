@@ -205,23 +205,26 @@ rules:
           - pattern: rds.NewInstance(...)
           - pattern: rds.NewCluster(...)
       # Suppress when `StorageEncrypted` is set in a way that is NOT a
-      # static-disable. Three accepted shapes:
+      # static-disable AND is secure-by-default. Three accepted shapes:
       #   * `StorageEncrypted: pulumi.Bool(true)` / `sdk.Bool(true)` /
       #     any `.Bool(true)` — the canonical Pulumi truthy shape.
       #   * bare `StorageEncrypted: true`.
-      #   * `StorageEncrypted: <ptr>.Bool(lo.FromPtr(<*bool expr>))` —
-      #     a runtime-config opt-in: value is config-driven (nil →
-      #     legacy default, explicit value otherwise) and is paired
-      #     with `IgnoreChanges([]string{"storageEncrypted"})` on the
-      #     resource opts so flipping the bit later doesn't trigger
-      #     destructive replacement of pre-existing unencrypted
-      #     instances. The pairing isn't verified in regex; the
-      #     wrapper shape is the design signal.
-      # Setting the field to `false` (literal) or `Bool(false)` still
-      # fires — those are explicit disables.
+      #   * `StorageEncrypted: <ptr>.Bool(lo.FromPtrOr(<*bool>, true))`
+      #     — runtime-config with secure default. The literal `true`
+      #     fallback is required: `lo.FromPtr(*ptr)` (nil → false → DB
+      #     unencrypted-by-default) and `lo.FromPtrOr(*ptr, false)`
+      #     both still fire. Pair this shape with
+      #     `IgnoreChanges([]string{"storageEncrypted"})` on the
+      #     resource opts so the default flip doesn't propose a
+      #     destructive replacement on existing unencrypted instances
+      #     (the pairing isn't verified in regex; the wrapper shape +
+      #     literal-true fallback are the design signal).
+      # Setting the field to `false` (literal), `Bool(false)`, or
+      # `lo.FromPtr(*bool)` (= `lo.FromPtrOr(*bool, false)`) still
+      # fires — those default to unencrypted.
       - pattern-not-regex: 'StorageEncrypted:\s*\w+\.Bool\(true\)'
       - pattern-not-regex: 'StorageEncrypted:\s*true\b'
-      - pattern-not-regex: 'StorageEncrypted:\s*\w+\.Bool\(lo\.FromPtr\([^()\n]+\)\)'
+      - pattern-not-regex: 'StorageEncrypted:\s*\w+\.Bool\(lo\.FromPtrOr\([^()\n]+,\s*true\s*\)\)'
     paths:
       include:
         - "**/*.go"
