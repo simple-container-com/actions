@@ -204,16 +204,27 @@ rules:
       - pattern-either:
           - pattern: rds.NewInstance(...)
           - pattern: rds.NewCluster(...)
-      # Suppress only when `StorageEncrypted` is explicitly set to a
-      # truthy value. Two forms are accepted:
+      # Suppress when `StorageEncrypted` is set in a way that is NOT a
+      # static-disable AND is secure-by-default. Three accepted shapes:
       #   * `StorageEncrypted: pulumi.Bool(true)` / `sdk.Bool(true)` /
-      #     anything that ends `.Bool(true)` (the canonical Pulumi shape)
-      #   * bare `StorageEncrypted: true` (less idiomatic but valid)
-      # Important: setting the field to `false` (or `pulumi.Bool(false)`,
-      # or any non-true value) does NOT suppress — we want to flag those
-      # explicitly-disabled cases, not let them through.
+      #     any `.Bool(true)` — the canonical Pulumi truthy shape.
+      #   * bare `StorageEncrypted: true`.
+      #   * `StorageEncrypted: <ptr>.Bool(lo.FromPtrOr(<*bool>, true))`
+      #     — runtime-config with secure default. The literal `true`
+      #     fallback is required: `lo.FromPtr(*ptr)` (nil → false → DB
+      #     unencrypted-by-default) and `lo.FromPtrOr(*ptr, false)`
+      #     both still fire. Pair this shape with
+      #     `IgnoreChanges([]string{"storageEncrypted"})` on the
+      #     resource opts so the default flip doesn't propose a
+      #     destructive replacement on existing unencrypted instances
+      #     (the pairing isn't verified in regex; the wrapper shape +
+      #     literal-true fallback are the design signal).
+      # Setting the field to `false` (literal), `Bool(false)`, or
+      # `lo.FromPtr(*bool)` (= `lo.FromPtrOr(*bool, false)`) still
+      # fires — those default to unencrypted.
       - pattern-not-regex: 'StorageEncrypted:\s*\w+\.Bool\(true\)'
       - pattern-not-regex: 'StorageEncrypted:\s*true\b'
+      - pattern-not-regex: 'StorageEncrypted:\s*\w+\.Bool\(lo\.FromPtrOr\([^()\n]+,\s*true\s*\)\)'
     paths:
       include:
         - "**/*.go"

@@ -219,6 +219,82 @@ func rdsExplicitlyDisabledBool(ctx *pulumiCtx) {
 	})
 }
 
+// Runtime-config secure-by-default shape:
+// `<ptr>.Bool(lo.FromPtrOr(<*bool>, true))`. Used in
+// simple-container-com/api: nil → true (encrypted), explicit value
+// otherwise. Paired with `IgnoreChanges([]string{"storageEncrypted"})`
+// on the resource opts (not shown — pairing isn't regex-verified).
+// Must NOT fire.
+type pulumiSdk struct{}
+
+func (pulumiSdk) Bool(_ bool) bool { return false }
+
+var sdk = pulumiSdk{}
+var pulumi = pulumiSdk{}
+
+type loPkg struct{}
+
+func (loPkg) FromPtr(_ *bool) bool             { return false }
+func (loPkg) FromPtrOr(_ *bool, _ bool) bool   { return false }
+
+var lo = loPkg{}
+
+type dbConfigShape struct{ StorageEncrypted *bool }
+
+func rdsRuntimeSecureSdk(ctx *pulumiCtx) {
+	cfg := dbConfigShape{}
+	// ok: go-aws-rds-no-storage-encryption
+	_ = rds.NewInstance(ctx, "db4", &instanceArgs{
+		Engine:           "postgres",
+		StorageEncrypted: sdk.Bool(lo.FromPtrOr(cfg.StorageEncrypted, true)),
+	})
+}
+
+// Same shape with `pulumi.Bool` prefix — must also NOT fire.
+func rdsRuntimeSecurePulumi(ctx *pulumiCtx) {
+	cfg := dbConfigShape{}
+	// ok: go-aws-rds-no-storage-encryption
+	_ = rds.NewCluster(ctx, "cluster3", &clusterArgs{
+		Engine:           "aurora-postgresql",
+		StorageEncrypted: pulumi.Bool(lo.FromPtrOr(cfg.StorageEncrypted, true)),
+	})
+}
+
+// Bare `lo.FromPtr(*ptr)` defaults to false when nil — DB ends up
+// unencrypted-by-default. Must STILL FIRE.
+func rdsBareFromPtrStillFires(ctx *pulumiCtx) {
+	cfg := dbConfigShape{}
+	// ruleid: go-aws-rds-no-storage-encryption
+	_ = rds.NewInstance(ctx, "db5", &instanceArgs{
+		Engine:           "postgres",
+		StorageEncrypted: sdk.Bool(lo.FromPtr(cfg.StorageEncrypted)),
+	})
+}
+
+// `lo.FromPtrOr(*ptr, false)` is just bare-FromPtr in disguise — the
+// fallback is unencrypted, so the DB defaults to unencrypted. Must
+// STILL FIRE.
+func rdsFromPtrOrFalseStillFires(ctx *pulumiCtx) {
+	cfg := dbConfigShape{}
+	// ruleid: go-aws-rds-no-storage-encryption
+	_ = rds.NewInstance(ctx, "db6", &instanceArgs{
+		Engine:           "postgres",
+		StorageEncrypted: sdk.Bool(lo.FromPtrOr(cfg.StorageEncrypted, false)),
+	})
+}
+
+// Arbitrary wrapper that isn't the recognized helper — rule must
+// FIRE (we don't trust unknown runtime expressions).
+func rdsArbitraryWrapperStillFires(ctx *pulumiCtx) {
+	// ruleid: go-aws-rds-no-storage-encryption
+	_ = rds.NewInstance(ctx, "db7", &instanceArgs{
+		Engine:           "postgres",
+		StorageEncrypted: sdk.Bool(someRuntimeBool()),
+	})
+}
+
+func someRuntimeBool() bool { return false }
+
 // --------------------------------------------------------------------
 // go-fmt-errorf-percent-v-for-error
 // --------------------------------------------------------------------
