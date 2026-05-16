@@ -1,0 +1,120 @@
+# Sigstore / cosign / attest-build-provenance hardening — supply-chain core.
+# These rules guard the verification surface that consumer projects use to
+# verify keyless cosign signatures, SLSA provenance, and SBOM attestations.
+#
+# Scoping note: most rules here are *whole-file* — Semgrep's YAML
+# block-scalar metavariables (`$BODY` inside a `run: |` mapping) do NOT
+# bind to the block content in practice, so per-`run:`-block scoping is
+# replaced with file-level pattern + pattern-not-regex pairs. This means a
+# workflow that mixes "safe" and "unsafe" usages on the same rule may not
+# fire; that case isn't in scope for typical CI hardening, where one
+# workflow exercises one consistent pattern.
+
+rules:
+  - id: gha-cosign-verify-without-identity-flag
+    message: >-
+      `cosign verify[-blob|-attestation]` invocation is missing
+      `--certificate-identity` (or `--certificate-identity-regexp`).
+      Without identity binding the call accepts any keyless signature
+      from any workflow in the Sigstore transparency log — defeats
+      trust-root separation. See docs/SECURITY.md "Identity-regex contract".
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include:
+        - "**/.github/workflows/*.yml"
+        - "**/.github/workflows/*.yaml"
+        - "**/.github/actions/**/action.yml"
+        - "**/.github/actions/**/action.yaml"
+    patterns:
+      - pattern-regex: '\bcosign\s+verify(?:-blob|-attestation)?\b'
+      - pattern-not-regex: '--certificate-identity(?:-regexp)?\b'
+
+  - id: gha-cosign-verify-without-oidc-issuer-flag
+    message: >-
+      `cosign verify[-blob|-attestation]` invocation is missing
+      `--certificate-oidc-issuer`. Required to bind the keyless signer
+      to a specific OIDC provider (almost always
+      `https://token.actions.githubusercontent.com` for GitHub-hosted CI).
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include:
+        - "**/.github/workflows/*.yml"
+        - "**/.github/workflows/*.yaml"
+        - "**/.github/actions/**/action.yml"
+        - "**/.github/actions/**/action.yaml"
+    patterns:
+      - pattern-regex: '\bcosign\s+verify(?:-blob|-attestation)?\b'
+      - pattern-not-regex: '--certificate-oidc-issuer\b'
+
+  - id: gha-cosign-verify-insecure-flags
+    message: >-
+      `cosign verify*` invoked with transparency-log bypass flags
+      (`--insecure-ignore-tlog`, `--insecure-ignore-sct`). These flags
+      DISABLE the Rekor inclusion proof that backs keyless verification —
+      a signature would verify even if it was never published to the
+      transparency log. Never use in CI or in documented consumer commands.
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include: ["**/*.yml", "**/*.yaml", "**/*.sh", "**/*.md"]
+    pattern-either:
+      - pattern-regex: 'cosign\s+verify\S*[^\n]*--insecure-ignore-tlog'
+      - pattern-regex: 'cosign\s+verify\S*[^\n]*--insecure-ignore-sct'
+
+  - id: gha-gh-attestation-missing-scope
+    message: >-
+      `gh attestation verify` requires `--owner <org>` OR `--repo
+      <owner>/<repo>` to bind the attestation lookup to a trusted scope.
+      Add `--cert-identity-regex` + `--cert-oidc-issuer` to match a
+      strict identity contract (see docs/SECURITY.md).
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include:
+        - "**/.github/workflows/*.yml"
+        - "**/.github/workflows/*.yaml"
+        - "**/.github/actions/**/action.yml"
+        - "**/.github/actions/**/action.yaml"
+    patterns:
+      - pattern-regex: '\bgh\s+attestation\s+verify\b'
+      - pattern-not-regex: '--(?:repo|owner)\s'
+
+  - id: gha-attest-build-provenance-mutable-subject
+    message: >-
+      `actions/attest-build-provenance` must publish provenance bound to
+      an immutable subject. Using `subject-name` with a mutable tag
+      (`:latest`, `:staging`) without a corresponding `subject-digest`
+      yields a provenance that "verifies" against whatever the tag
+      currently points to — defeats the SLSA Build L3 non-falsifiability
+      property. Always pass `subject-digest:`.
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include: ["**/.github/workflows/*.yml", "**/.github/workflows/*.yaml"]
+    patterns:
+      - pattern-either:
+          - pattern-regex: 'subject-name:\s*["'']?[^"''\n]+:latest["'']?'
+          - pattern-regex: 'subject-name:\s*["'']?[^"''\n]+:staging["'']?'
+      - pattern-not-regex: 'subject-digest:\s*\S'
+
+  - id: gha-oidc-id-token-on-untrusted-trigger
+    message: >-
+      A job with `permissions: id-token: write` is reachable from an
+      untrusted-input trigger (`pull_request_target`, `workflow_run`, or
+      `pull_request` without explicit gating). OIDC token-grant from a
+      fork PR can mint a Sigstore identity that a permissive trust-root
+      regex would accept. Either remove `id-token: write` from the job or
+      split the workflow so signing jobs run only on trusted refs.
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include: ["**/.github/workflows/*.yml", "**/.github/workflows/*.yaml"]
+    pattern-either:
+      # Forward order: `on:\n  pull_request_target` then somewhere
+      # `id-token: write`.
+      - pattern-regex: '(?ms)(?:\A|\n)on:\s*\n\s*(?:pull_request_target|workflow_run)\b[\s\S]{0,30000}?id-token:\s*write'
+      # Reverse order: `id-token: write` defined before `on:` (rare in
+      # practice, but harmless to cover).
+      - pattern-regex: '(?ms)id-token:\s*write[\s\S]{1,30000}?(?:\A|\n)on:\s*\n\s*(?:pull_request_target|workflow_run)\b'
