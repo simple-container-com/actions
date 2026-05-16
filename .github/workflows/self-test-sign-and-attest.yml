@@ -1,0 +1,144 @@
+name: Self-test sign-and-attest
+
+# Integration test for the `sign-and-attest` composite. Builds a tiny
+# alpine-based image, pushes to ghcr.io under this repo's namespace,
+# invokes the composite, then runs the three verification commands a
+# consumer would run: `cosign verify`, `cosign verify-attestation`,
+# `gh attestation verify`. All three must succeed for the test to pass.
+#
+# Runs on every PR / push to main and on workflow_dispatch.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sign-and-verify:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write       # push the test image to ghcr.io
+      id-token: write       # cosign keyless + actions/attest-build-provenance
+      attestations: write   # actions/attest-build-provenance API
+    env:
+      # ghcr.io path under this org. Each PR run gets a unique tag (the
+      # short SHA + run number) so concurrent runs don't collide.
+      IMAGE_REPO: ghcr.io/${{ github.repository }}/sign-and-attest-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@327cd5a69de6c009b9ce71bce8395f28e651bf99  # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
+
+      - name: Create test Dockerfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p test-fixture
+          cat > test-fixture/Dockerfile <<'EOF'
+          FROM alpine:3.21
+          LABEL org.opencontainers.image.title="sign-and-attest self-test fixture"
+          LABEL org.opencontainers.image.source="https://github.com/simple-container-com/actions"
+          LABEL org.opencontainers.image.description="Throwaway image built by the sign-and-attest self-test. Safe to delete."
+          EOF
+
+      - name: Build and push test image
+        id: build
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
+        with:
+          context: ./test-fixture
+          push: true
+          tags: ${{ env.IMAGE_REPO }}:run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          provenance: false  # we want attest-build-provenance, not buildx attestations
+
+      - name: Invoke sign-and-attest
+        id: signattest
+        uses: ./sign-and-attest
+        with:
+          image-ref: ${{ env.IMAGE_REPO }}@${{ steps.build.outputs.digest }}
+          image-name: sign-and-attest-test
+          subject-name: ${{ env.IMAGE_REPO }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          # Hard-fail on the self-test so transient sigstore-public outages
+          # surface as a clear CI failure instead of being swallowed by the
+          # default `continue-on-error`.
+          soft-fail: 'false'
+
+      - name: Verify cosign signature
+        shell: bash
+        env:
+          IMAGE_REF: ${{ env.IMAGE_REPO }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign verify "${IMAGE_REF}" \
+            --certificate-identity-regexp "^https://github\.com/simple-container-com/actions/" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            >/dev/null
+          echo "::notice::cosign verify OK"
+
+      - name: Verify CycloneDX SBOM attestation
+        shell: bash
+        env:
+          IMAGE_REF: ${{ env.IMAGE_REPO }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign verify-attestation "${IMAGE_REF}" \
+            --type cyclonedx \
+            --certificate-identity-regexp "^https://github\.com/simple-container-com/actions/" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            >/dev/null
+          echo "::notice::cosign verify-attestation (cyclonedx) OK"
+
+      - name: Verify SLSA build provenance
+        shell: bash
+        env:
+          IMAGE_REF: ${{ env.IMAGE_REPO }}@${{ steps.build.outputs.digest }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh attestation verify "oci://${IMAGE_REF}" \
+            --repo ${{ github.repository }} \
+            --cert-identity-regex "^https://github\.com/simple-container-com/actions/" \
+            --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
+            >/dev/null
+          echo "::notice::gh attestation verify (SLSA) OK"
+
+      - name: Verify composite outputs are populated
+        shell: bash
+        env:
+          SBOM_PATH: ${{ steps.signattest.outputs.sbom-path }}
+          SBOM_OUTCOME: ${{ steps.signattest.outputs.sbom-outcome }}
+          SIGN_OUTCOME: ${{ steps.signattest.outputs.sign-outcome }}
+          ATTEST_OUTCOME: ${{ steps.signattest.outputs.attest-outcome }}
+          SLSA_OUTCOME: ${{ steps.signattest.outputs.slsa-outcome }}
+        run: |
+          set -euo pipefail
+          [ -f "${SBOM_PATH}" ] || { echo "::error::SBOM file not found at ${SBOM_PATH}"; exit 1; }
+          for kv in "sbom-outcome=${SBOM_OUTCOME}" \
+                    "sign-outcome=${SIGN_OUTCOME}" \
+                    "attest-outcome=${ATTEST_OUTCOME}" \
+                    "slsa-outcome=${SLSA_OUTCOME}"; do
+            name="${kv%%=*}"
+            val="${kv#*=}"
+            if [ "${val}" != "success" ]; then
+              echo "::error::Composite output ${name}=${val} (expected 'success')"
+              exit 1
+            fi
+          done
+          echo "::notice::All composite outputs OK; SBOM at ${SBOM_PATH}"
