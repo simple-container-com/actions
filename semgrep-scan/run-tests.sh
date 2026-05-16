@@ -26,6 +26,10 @@ declare -A pairs=(
   ["$RULES_DIR/shell.yml"]="$TESTS_DIR/shell.bash"
   ["$RULES_DIR/github-actions.yml"]="$TESTS_DIR/.github/workflows/cases.yml"
   ["$RULES_DIR/go.yml"]="$TESTS_DIR/go_cases.go"
+  ["$RULES_DIR/sigstore.yml"]="$TESTS_DIR/.github/workflows/sigstore-cases.yml"
+  ["$RULES_DIR/gha-extras.yml"]="$TESTS_DIR/.github/workflows/gha-extras-cases.yml"
+  ["$RULES_DIR/pulumi-iac.yml"]="$TESTS_DIR/pulumi/cases.go"
+  ["$RULES_DIR/go-canon.yml"]="$TESTS_DIR/canon/cases.go"
 )
 
 failed=0

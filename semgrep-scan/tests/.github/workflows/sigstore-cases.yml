@@ -1,0 +1,70 @@
+name: Sigstore Fixtures
+# Test fixtures for semgrep-scan/rules/sigstore.yml.
+#
+# Lines marked `# ruleid: <id>` MUST match that rule on the next non-comment
+# line. Lines marked `# ok: <id>` MUST NOT match.
+#
+# All sigstore rules here are FILE-LEVEL — Semgrep's YAML block-scalar
+# metavariables (the `$BODY` of a `run: |` mapping) do not bind to the
+# block content in practice. The fixture therefore uses single-line
+# `run:` syntax so the rule's regex match-range covers exactly the marker
+# target line.
+#
+# Comments below avoid the literal flag strings the rules look for
+# (`--certificate-identity`, `id-token: write`, `cosign verify`, etc.)
+# so they do not extend the match range past the intended target.
+
+on:
+  pull_request_target:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  oidc-trigger-case:
+    runs-on: ubuntu-24.04
+    permissions:
+      # ruleid: gha-oidc-id-token-on-untrusted-trigger
+      id-token: write
+    steps:
+      - run: echo build
+
+  cosign-no-identity-cases:
+    runs-on: ubuntu-24.04
+    steps:
+      # ruleid: gha-cosign-verify-without-identity-flag
+      - run: cosign verify image-uri@sha256:abc
+
+      # ruleid: gha-cosign-verify-without-identity-flag
+      - run: cosign verify-blob --signature sig.bin --bundle bundle.json artifact.tar.gz
+
+      # ruleid: gha-cosign-verify-without-identity-flag
+      - run: cosign verify-attestation --type cyclonedx image-uri@sha256:def
+
+  cosign-insecure-flag-cases:
+    runs-on: ubuntu-24.04
+    steps:
+      # ruleid: gha-cosign-verify-insecure-flags
+      - run: cosign verify --insecure-ignore-tlog example.com/repo@sha256:abc
+
+      # ruleid: gha-cosign-verify-insecure-flags
+      - run: cosign verify-blob --insecure-ignore-sct --signature sig.bin artifact
+
+  gh-attestation-cases:
+    runs-on: ubuntu-24.04
+    steps:
+      # ruleid: gha-gh-attestation-missing-scope
+      - run: gh attestation verify --cert-identity-regex '.+' --cert-oidc-issuer https://token.actions.githubusercontent.com image-uri@sha256:abc
+
+  attest-provenance-cases:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/attest-build-provenance@v4
+        with:
+          # ruleid: gha-attest-build-provenance-mutable-subject
+          subject-name: "docker.io/foo/bar:latest"
+
+      - uses: actions/attest-build-provenance@v4
+        with:
+          # ruleid: gha-attest-build-provenance-mutable-subject
+          subject-name: "docker.io/foo/bar:staging"

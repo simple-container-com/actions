@@ -1,0 +1,73 @@
+name: Extras Fixtures
+# Test fixtures for semgrep-scan/rules/gha-extras.yml.
+#
+# Lines marked `# ruleid: <id>` MUST match that rule on the next non-comment line.
+# Lines marked `# ok: <id>` MUST NOT match that rule on the next non-comment line.
+#
+# `gha-workflow-level-secret-env` is `\A`-anchored — the file MUST start with
+# `name:`; the `env:` block must be at workflow scope (top-level), so the
+# positive case for that rule is at the top of the file, before `jobs:`.
+
+on:
+  pull_request_target:
+  push:
+
+# Workflow-level env: with a `secrets.X` reference triggers rule 1
+# (whole-file regex anchored at `\Aname:`).
+env:
+  # ruleid: gha-workflow-level-secret-env
+  GLOBAL_TOKEN: ${{ secrets.MY_TOKEN }}
+  OTHER_VAR: static-value
+
+jobs:
+  # `pull_request_target` trigger above + actions/checkout below without a
+  # workflow_run-pinned ref triggers rule 3 (whole-file).
+  pull-request-target-checkout-case:
+    runs-on: ubuntu-24.04
+    steps:
+      # ruleid: gha-pull-request-target-implicit-base-ref
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+  upload-artifact-cases:
+    runs-on: ubuntu-24.04
+    steps:
+      # actions/upload-artifact + path matching a secret-file pattern
+      # triggers rule 2 (whole-file scoped AND across the two regexes).
+      # ruleid: gha-upload-artifact-secrets-leak
+      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
+        with:
+          name: app-secrets
+          path: ./.env
+
+      # Additional bad-path forms — same rule fires once whole-file.
+      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
+        with:
+          name: tls
+          path: certs/server.pem
+
+      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
+        with:
+          name: secrets-dir
+          path: secrets/
+
+  github-token-leak-cases:
+    runs-on: ubuntu-24.04
+    steps:
+      # echo of GITHUB_TOKEN-derived value into $GITHUB_ENV → fire.
+      # ruleid: gha-github-token-in-github-env
+      - run: echo "REPO_TOKEN=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_ENV
+
+      # Token name + redirect to $GITHUB_ENV (generic form) → fire.
+      # ruleid: gha-github-token-in-github-env
+      - run: echo "DEPLOY_TOKEN=${{ secrets.DEPLOY_PAT }}" >> $GITHUB_ENV
+
+      # Token assignment without the $GITHUB_ENV redirect, and no
+      # secrets.GITHUB_TOKEN suffix — must NOT fire.
+      # ok: gha-github-token-in-github-env
+      - run: echo "$NON_TOKEN=value"
+
+      # `$GITHUB_OUTPUT` writes are allowed (step-scoped). Must NOT fire.
+      # ok: gha-github-token-in-github-env
+      - run: echo "result=ok" >> $GITHUB_OUTPUT
