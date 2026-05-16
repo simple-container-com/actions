@@ -26,9 +26,14 @@ rules:
         - "**/.github/workflows/*.yaml"
         - "**/.github/actions/**/action.yml"
         - "**/.github/actions/**/action.yaml"
-    patterns:
-      - pattern-regex: '\bcosign\s+verify(?:-blob|-attestation)?\b'
-      - pattern-not-regex: '--certificate-identity(?:-regexp)?\b'
+    # Single multi-line regex with two precision tweaks:
+    #  1. anchor `cosign verify` to a command start (line beginning after
+    #     indent, or directly after `run:`) so occurrences inside echo /
+    #     warning strings and inside YAML / Markdown comments do not match;
+    #  2. negative lookahead crosses shell line-continuations (`\` at EOL)
+    #     so the `--certificate-identity` flag on a continuation line
+    #     correctly suppresses the finding.
+    pattern-regex: '(?ms)(?:^[ \t]*|run:[ \t]+)cosign\s+verify(?:-blob|-attestation)?\b(?!(?:[^\n]*\\\s*\n)*?[^\n]*--certificate-identity(?:-regexp)?\b)'
 
   - id: gha-cosign-verify-without-oidc-issuer-flag
     message: >-
@@ -44,9 +49,7 @@ rules:
         - "**/.github/workflows/*.yaml"
         - "**/.github/actions/**/action.yml"
         - "**/.github/actions/**/action.yaml"
-    patterns:
-      - pattern-regex: '\bcosign\s+verify(?:-blob|-attestation)?\b'
-      - pattern-not-regex: '--certificate-oidc-issuer\b'
+    pattern-regex: '(?ms)(?:^[ \t]*|run:[ \t]+)cosign\s+verify(?:-blob|-attestation)?\b(?!(?:[^\n]*\\\s*\n)*?[^\n]*--certificate-oidc-issuer\b)'
 
   - id: gha-cosign-verify-insecure-flags
     message: >-
@@ -77,9 +80,11 @@ rules:
         - "**/.github/workflows/*.yaml"
         - "**/.github/actions/**/action.yml"
         - "**/.github/actions/**/action.yaml"
-    patterns:
-      - pattern-regex: '\bgh\s+attestation\s+verify\b'
-      - pattern-not-regex: '--(?:repo|owner)\s'
+    # Same precision pattern as the cosign rules above — anchor to a
+    # command start + cross shell line-continuations for the negative
+    # lookahead, so `--repo` / `--owner` flags on continuation lines
+    # correctly suppress the finding.
+    pattern-regex: '(?ms)(?:^[ \t]*|run:[ \t]+)gh\s+attestation\s+verify\b(?!(?:[^\n]*\\\s*\n)*?[^\n]*--(?:repo|owner)\s)'
 
   - id: gha-attest-build-provenance-mutable-subject
     message: >-
