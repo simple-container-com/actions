@@ -1,0 +1,103 @@
+name: Self-test composites
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  setup-sc-tooling:
+    name: setup-sc-tooling — both tools
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup SC tooling
+        id: setup
+        uses: ./setup-sc-tooling
+
+      - name: Verify sc + welder on PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tool in sc welder; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              echo "::error::$tool not on PATH after setup-sc-tooling"
+              exit 1
+            fi
+            "$tool" --version || "$tool" version || true
+          done
+          [ -n "${{ steps.setup.outputs.sc-version }}" ] || { echo '::error::sc-version output empty'; exit 1; }
+          [ -n "${{ steps.setup.outputs.welder-version }}" ] || { echo '::error::welder-version output empty'; exit 1; }
+          [ -x "${{ steps.setup.outputs.sc-binary }}" ] || { echo '::error::sc-binary output is not executable'; exit 1; }
+          [ -x "${{ steps.setup.outputs.welder-binary }}" ] || { echo '::error::welder-binary output is not executable'; exit 1; }
+
+  setup-sc-tooling-skip-welder:
+    name: setup-sc-tooling — install-sc only (skip welder)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with: { persist-credentials: false }
+
+      - name: Setup sc only
+        uses: ./setup-sc-tooling
+        with:
+          install-welder: 'false'
+
+      - name: Verify sc present, welder absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v sc >/dev/null 2>&1 || { echo '::error::sc not installed'; exit 1; }
+          if command -v welder >/dev/null 2>&1; then
+            echo '::error::welder should not be installed when install-welder=false'
+            exit 1
+          fi
+
+  setup-sc-tooling-skip-sc:
+    name: setup-sc-tooling — welder only (skip sc)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with: { persist-credentials: false }
+
+      - name: Setup welder only
+        uses: ./setup-sc-tooling
+        with:
+          install-sc: 'false'
+
+      - name: Verify welder present, sc absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v welder >/dev/null 2>&1 || { echo '::error::welder not installed'; exit 1; }
+          if command -v sc >/dev/null 2>&1; then
+            echo '::error::sc should not be installed when install-sc=false'
+            exit 1
+          fi
+
+  install-attest-tools:
+    name: install-attest-tools — cosign + syft + gh
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with: { persist-credentials: false }
+
+      - name: Install attestation tools
+        uses: ./install-attest-tools
+
+      - name: Verify cosign + syft + gh
+        shell: bash
+        run: |
+          set -euo pipefail
+          cosign version
+          syft version
+          gh --version | head -n 1
