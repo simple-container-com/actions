@@ -5,13 +5,27 @@ name: SC Image Release (reusable)
 # branch-preview.yaml, build-staging.yml). Encapsulates ~10 steps per
 # image into a single `uses:` call from a matrix.
 #
-# Internal references to sibling composites (`./setup-sc-tooling`,
-# `./sign-and-attest`) use **native relative paths**, which GHA
-# resolves against the same repo + ref the consumer pinned this
-# workflow to. That makes the inner pin chain atomic: consumer pins
-# ONE SHA at the `uses:` call site for this workflow, and every
-# sibling composite it references resolves to that exact SHA. No
-# `# SELF-REF` annotations, no `bump-self-refs` automation, no
+# ## Atomic pin: checkout-then-relative-path
+#
+# Reusable workflows that need to reference their own sibling actions
+# face a chicken-and-egg problem. GHA `uses:` ref position doesn't
+# accept expressions, so a hardcoded SHA would drift out of sync with
+# the workflow itself; native `./` paths inside a reusable workflow
+# resolve against the CALLER's workspace, not the workflow's source
+# repo (verified empirically — see test/native-relative-paths-in-
+# reusable branch, preview run 25993924214). The clean pattern:
+#
+#   1. Use `actions/checkout` to clone the actions repo at the exact
+#      SHA of THIS workflow (`github.workflow_sha`) into a scratch
+#      directory (`.sc-actions`).
+#   2. Reference sibling composites via `./.sc-actions/<name>` —
+#      relative path inside the runner workspace where step 1
+#      placed them.
+#
+# This makes the inner pin chain atomic: consumer pins ONE SHA at the
+# `uses:` call site for this workflow, and every sibling composite it
+# uses resolves to that exact same SHA via `github.workflow_sha`.
+# No SELF-REF annotations, no bump-self-refs automation, no
 # Dependabot-vs-self-references gymnastics.
 #
 # REQUIRES the calling job to delegate via `uses: ... @ <sha>` at the
@@ -137,9 +151,21 @@ jobs:
       attest-outcome: ${{ steps.signattest.outputs.attest-outcome }}
       slsa-outcome: ${{ steps.signattest.outputs.slsa-outcome }}
     steps:
-      - name: Checkout
+      - name: Checkout consumer repo
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
+          persist-credentials: false
+
+      - name: Checkout actions repo at this workflow's ref
+        # Companion checkout so `uses: ./.sc-actions/<composite>` below
+        # resolves to setup-sc-tooling and sign-and-attest at the SAME
+        # SHA the consumer pinned this reusable workflow to. See header
+        # comment for the design rationale.
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          repository: simple-container-com/actions
+          ref: ${{ github.workflow_sha }}
+          path: .sc-actions
           persist-credentials: false
 
       - name: Download build artifact (${{ inputs.download-artifact }})
@@ -150,10 +176,7 @@ jobs:
           path: ${{ inputs.download-artifact-path }}
 
       - name: Setup SC tooling
-        # Native relative path — GHA resolves `./<path>` inside a
-        # reusable workflow against the same repo + ref the consumer
-        # pinned this workflow to. Atomic by construction.
-        uses: ./setup-sc-tooling
+        uses: ./.sc-actions/setup-sc-tooling
         with:
           install-welder: ${{ inputs.install-welder }}
 
@@ -207,8 +230,7 @@ jobs:
       - name: Sign + attest ${{ inputs.image-name }} (SBOM + cosign + SLSA)
         id: signattest
         if: steps.build.outcome == 'success'
-        # Native relative path (same model as Setup SC tooling above).
-        uses: ./sign-and-attest
+        uses: ./.sc-actions/sign-and-attest
         with:
           image-ref: ${{ inputs.image-repo }}@${{ steps.build.outputs.digest }}
           image-name: ${{ inputs.image-name }}
