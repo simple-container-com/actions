@@ -1,48 +1,45 @@
 name: Bump SELF-REF SHAs
 
-# Closes the SELF-REF recursion loop in this repo. When sc-image-release.yml
-# (or any future workflow / composite) references a sibling action of this
-# same repo by SHA, that SHA is annotated with a `# SELF-REF` trailing
-# comment. This workflow runs on push-to-main, scans for those markers, and
-# opens a PR that rewrites every SELF-REF SHA to point at the just-merged
-# commit. Maintainer merges the PR; consumers' Dependabot then bumps the
-# `sc-image-release.yml@<sha>` ref in turn.
+# Closes the SELF-REF recursion loop. When sc-image-release.yml (or any
+# future workflow / composite) references a sibling action of this same
+# repo by SHA, that SHA is annotated with a `# SELF-REF` trailing
+# comment. This workflow runs on push-to-main, invokes
+# `scripts/bump-self-refs.py` to rewrite each marker's SHA to the
+# just-merged commit, and opens (or refreshes) a PR for a maintainer to
+# merge. See the script's docstring for the full design.
 #
 # Loop avoidance — two complementary defences:
 #
 #   1. `paths:` filter (below). The workflow only fires when a file
-#      INSIDE one of the SELF-REF target directories changes. The
-#      chore(self-refs) PR's own merge commit touches `*.yml` files at
-#      the repo root + .github/workflows/ — NOT the action.yml files
-#      under setup-sc-tooling/ etc. — so the merge commit does not
-#      re-trigger this workflow. This is the structural fix; without
-#      it, a chore-merge would re-run and generate another chore PR
-#      ad infinitum.
+#      inside a SELF-REF target directory changes. The chore(self-refs)
+#      PR's own merge commit touches only `.github/workflows/sc-image-
+#      release.yml` (the file holding the SELF-REF lines being
+#      rewritten) and possibly other `.github/workflows/*.yml` — NOT
+#      the action.yml files under setup-sc-tooling/ etc. — so the
+#      merge commit does NOT re-trigger this workflow.
 #
 #   2. `contains('chore(self-refs):')` guard on the head-commit
 #      message. Belt-and-braces against an edge case where someone
 #      restructures the repo so a chore-merge commit also touches a
-#      SELF-REF target path. Uses `contains` (not `startsWith`)
-#      because the actions repo uses merge-commit style — the head-
-#      commit message looks like `Merge pull request #N from chore/
-#      bump-self-refs-<sha>\n\nchore(self-refs): bump …`, so the
-#      marker is in the body, not the title.
+#      SELF-REF target path. `contains` (not `startsWith`) catches the
+#      marker in either the title (squash-merge) or body (merge-commit
+#      style — the actions repo uses merge-commit style).
 
 on:
   push:
     branches: [main]
     paths:
-      # Files that, if changed, MAY require a SELF-REF bump downstream.
-      # Composite actions that are referenced via SELF-REF markers.
+      # Composite actions referenced via SELF-REF markers.
       - 'setup-sc-tooling/**'
       - 'sign-and-attest/**'
       - 'install-sc/**'
       - 'install-welder/**'
       - 'install-attest-tools/**'
       - 'notify-telegram/**'
-      # This workflow itself — so a change to the bump logic is exercised
-      # on the next merge.
+      # The bump-self-refs workflow + script themselves — so a change
+      # to the bump logic is exercised on the next merge.
       - '.github/workflows/bump-self-refs.yml'
+      - 'scripts/bump-self-refs.py'
   workflow_dispatch:
 
 permissions:
@@ -61,109 +58,10 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
-          fetch-depth: 0  # need history for git push
+          fetch-depth: 0
 
-      - name: Rewrite SELF-REF SHAs to current main
-        id: rewrite
+      - name: Bump SELF-REF SHAs + open chore PR
         env:
           NEW_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-
-          # Find all yml/yaml files that contain a SELF-REF marker.
-          mapfile -t files < <(grep -rlE 'SELF-REF' \
-                                 --include='*.yml' --include='*.yaml' . 2>/dev/null || true)
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo 'No SELF-REF markers found; nothing to bump.'
-            echo 'changed=false' >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "Scanning ${#files[@]} file(s) for SELF-REF lines:"
-          printf '  - %s\n' "${files[@]}"
-
-          for f in "${files[@]}"; do
-            # Rewrite any `uses: simple-container-com/actions/<path>@<40hex> # SELF-REF...`
-            # line to point at $NEW_SHA. Each substitution preserves the
-            # trailing `# SELF-REF...` annotation. Python keeps the regex
-            # readable + handles multi-line files without sed escaping pain.
-            FILE="$f" NEW_SHA="$NEW_SHA" python3 - <<'PY'
-          import os, re, pathlib
-          path = pathlib.Path(os.environ['FILE'])
-          new_sha = os.environ['NEW_SHA']
-          text = path.read_text()
-          pattern = re.compile(
-              r'(uses:\s+simple-container-com/actions/[^@\s]+@)'
-              r'([a-f0-9]{40})'
-              r'(\s*#[^\n]*SELF-REF[^\n]*)',
-              re.MULTILINE,
-          )
-          new_text, n = pattern.subn(
-              lambda m: m.group(1) + new_sha + m.group(3),
-              text,
-          )
-          if new_text != text:
-              path.write_text(new_text)
-              print(f'BUMPED {path}: {n} ref(s)')
-          PY
-          done
-
-          if git diff --quiet; then
-            echo 'SELF-REFs already at the current main SHA; no bump needed.'
-            echo 'changed=false' >> "$GITHUB_OUTPUT"
-          else
-            echo 'changed=true' >> "$GITHUB_OUTPUT"
-            echo 'Files modified:'
-            git diff --name-only
-          fi
-
-      - name: Create / update auto-bump PR
-        if: steps.rewrite.outputs.changed == 'true'
-        env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NEW_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          SHORT="${NEW_SHA:0:10}"
-          # Single fixed branch — force-pushed on each run. Keeps the PR
-          # queue to ONE open chore(self-refs) PR even when several
-          # SELF-REF-target commits land back-to-back. The PR's diff
-          # always reflects the latest main HEAD.
-          BRANCH='chore/bump-self-refs'
-
-          # GitHub-Actions bot identity for the commit.
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-
-          git checkout -b "$BRANCH"
-          git add -A
-          git commit -m "chore(self-refs): bump SELF-REF SHAs to ${SHORT}"
-
-          # Force-push so the branch always reflects the latest main HEAD.
-          # `--force-with-lease` prevents clobbering an in-flight push from
-          # a concurrent run (extremely unlikely on a single repo's main
-          # but cheap insurance).
-          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git push --force-with-lease origin "$BRANCH"
-
-          # Open or update the PR.
-          PR_NUMBER="$(gh pr list --head "$BRANCH" --base main --json number --jq '.[0].number // empty')"
-          if [ -z "$PR_NUMBER" ]; then
-            gh pr create \
-              --title "chore(self-refs): bump SELF-REF SHAs to ${SHORT}" \
-              --body "Auto-bump by \`.github/workflows/bump-self-refs.yml\` triggered by commit \`${NEW_SHA}\`.
-
-          The SELF-REF SHAs in this repo's reusable workflows + composite actions are rewritten to point at the latest main HEAD, so a maintainer merging this PR re-aligns the inner pin chain in one click. Closes the documented recursive-pin loop (see workflow header for the full design).
-
-          This PR uses a fixed branch (\`chore/bump-self-refs\`) and is force-pushed on every run — only one auto-bump PR exists at any time, always reflecting the latest main HEAD." \
-              --base main \
-              --head "$BRANCH" \
-              --label dependencies \
-              --label automated
-          else
-            # PR already exists; force-push already updated the branch.
-            # Refresh title with the latest short SHA for at-a-glance clarity.
-            gh pr edit "$PR_NUMBER" \
-              --title "chore(self-refs): bump SELF-REF SHAs to ${SHORT}"
-            echo "Updated existing PR #${PR_NUMBER}"
-          fi
+        run: ./scripts/bump-self-refs.py
