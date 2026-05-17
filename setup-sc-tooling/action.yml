@@ -1,0 +1,69 @@
+name: 'Setup SC Tooling'
+description: |
+  Install Simple Container CLI (`sc`) and/or Welder in one step. Both
+  install scripts are invoked directly (not via the `install-sc` /
+  `install-welder` composites) to avoid GitHub Actions' restriction
+  against composite-to-composite `uses:` references that interpolate
+  the parent ref — this keeps the composite self-contained at whatever
+  SHA the consumer pinned.
+
+inputs:
+  install-sc:
+    description: 'Install the sc CLI (`true` / `false`).'
+    required: false
+    default: 'true'
+  install-welder:
+    description: 'Install Welder (`true` / `false`).'
+    required: false
+    default: 'true'
+  sc-version:
+    description: 'sc CLI version (e.g. `2026.4.12` or a `-preview.<sha>` tag). Empty → latest.'
+    required: false
+    default: ''
+  sc-sha256:
+    description: 'OPTIONAL hex SHA256 of the sc tarball. When set, the download is verified before extraction.'
+    required: false
+    default: ''
+  welder-version:
+    description: 'Welder version (e.g. `2026.4.12`). Empty → latest.'
+    required: false
+    default: ''
+  welder-sha256:
+    description: 'OPTIONAL hex SHA256 of the Welder tarball.'
+    required: false
+    default: ''
+
+outputs:
+  sc-version:
+    description: 'The sc version that was installed (resolved from input or `latest`).'
+    value: ${{ steps.install_sc.outputs.version }}
+  sc-binary:
+    description: 'Absolute path to the installed `sc` binary.'
+    value: ${{ steps.install_sc.outputs.binary }}
+  welder-version:
+    description: 'The Welder version that was installed.'
+    value: ${{ steps.install_welder.outputs.version }}
+  welder-binary:
+    description: 'Absolute path to the installed `welder` binary.'
+    value: ${{ steps.install_welder.outputs.binary }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install sc
+      id: install_sc
+      if: inputs.install-sc == 'true'
+      shell: bash
+      env:
+        SC_VERSION: ${{ inputs.sc-version }}
+        SC_SHA256: ${{ inputs.sc-sha256 }}
+      run: ${{ github.action_path }}/../install-sc/install.sh
+
+    - name: Install Welder
+      id: install_welder
+      if: inputs.install-welder == 'true'
+      shell: bash
+      env:
+        WELDER_VERSION: ${{ inputs.welder-version }}
+        WELDER_SHA256: ${{ inputs.welder-sha256 }}
+      run: ${{ github.action_path }}/../install-welder/install.sh
