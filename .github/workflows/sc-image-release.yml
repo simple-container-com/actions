@@ -156,17 +156,24 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Checkout actions repo at this workflow's ref
-        # Companion checkout so `uses: ./.sc-actions/<composite>` below
-        # resolves to setup-sc-tooling and sign-and-attest at the SAME
-        # SHA the consumer pinned this reusable workflow to. See header
-        # comment for the design rationale.
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          repository: simple-container-com/actions
-          ref: ${{ github.workflow_sha }}
-          path: .sc-actions
-          persist-credentials: false
+      - name: Debug — dump ref-bearing GHA contexts (THROWAWAY)
+        env:
+          GH_WORKFLOW_REF: ${{ github.workflow_ref }}
+          GH_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          GH_ACTION_REF: ${{ github.action_ref }}
+          GH_ACTION_PATH: ${{ github.action_path }}
+          GH_ACTION_REPOSITORY: ${{ github.action_repository }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_SHA: ${{ github.sha }}
+        run: |
+          echo "github.workflow_ref      = $GH_WORKFLOW_REF"
+          echo "github.workflow_sha      = $GH_WORKFLOW_SHA"
+          echo "github.action_ref        = $GH_ACTION_REF"
+          echo "github.action_path       = $GH_ACTION_PATH"
+          echo "github.action_repository = $GH_ACTION_REPOSITORY"
+          echo "github.repository        = $GH_REPOSITORY"
+          echo "github.sha               = $GH_SHA"
+          echo "::warning::Debug step active — DO NOT MERGE until ref-source decided."
 
       - name: Download build artifact (${{ inputs.download-artifact }})
         if: inputs.download-artifact != ''
