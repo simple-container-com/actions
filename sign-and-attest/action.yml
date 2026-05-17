@@ -1,0 +1,148 @@
+name: 'Sign and Attest OCI Image (CycloneDX SBOM + cosign keyless + SLSA L3)'
+description: |
+  Full attestation flow for a freshly-built OCI image:
+
+    1. Generate a CycloneDX SBOM from the image's registry layout (syft).
+    2. Sign the image with cosign keyless (Sigstore Fulcio + Rekor).
+    3. Attest the SBOM via `cosign attest --type cyclonedx`. Lives in
+       the OCI registry under the image's `.att` tag —
+       `cosign verify-attestation` resolves it.
+    4. Publish SLSA Build L3 provenance via the GitHub attestation API
+       (`actions/attest-build-provenance`). `gh attestation verify`
+       resolves it. Deliberately NOT pushed to the registry to avoid
+       overwriting the SBOM attestation under the same `.att` tag —
+       see SC's Phase 2 SECURITY.md for the cross-attestation contract.
+
+  Each step is `continue-on-error` by default during Phase 2 bake-in
+  (set `soft-fail: false` once the consumer's verify-attestations job
+  has been green for 14 days). Per-step outcomes are surfaced as
+  outputs so the calling workflow can aggregate them into a single
+  ::warning:: summary.
+
+  REQUIRES the calling job to set:
+
+      permissions:
+        id-token: write      # OIDC for cosign keyless + attest-build-provenance
+        attestations: write  # actions/attest-build-provenance API
+
+inputs:
+  image-ref:
+    description: |
+      Fully-qualified image reference WITH digest — e.g.
+      `simplecontainer/foo@sha256:abc…`. Always pin by digest;
+      verification by tag is unsafe (TOCTOU).
+    required: true
+  image-name:
+    description: 'Short logical name used in step labels and the output SBOM filename (e.g. `caddy`).'
+    required: true
+  subject-name:
+    description: |
+      Subject name for `actions/attest-build-provenance`. Typically
+      `index.docker.io/<image_repo>` or `ghcr.io/<owner>/<image_repo>`
+      (no tag or digest — the digest is the next input).
+    required: true
+  subject-digest:
+    description: '`sha256:…` digest for `actions/attest-build-provenance`. Usually the `digest` output of `docker/build-push-action`.'
+    required: true
+  install-tools:
+    description: 'Whether to install cosign + syft via pinned actions. Default `true`. Set `false` if the caller already invoked `install-attest-tools` (idempotent — calling twice is fine).'
+    required: false
+    default: 'true'
+  soft-fail:
+    description: 'When `true` (default during Phase 2 bake-in) each sub-step is `continue-on-error: true`. Set `false` after bake-in to make the gate strict.'
+    required: false
+    default: 'true'
+  cosign-version:
+    description: 'Cosign release tag (only used when `install-tools: true`).'
+    required: false
+    default: 'v2.4.1'
+  syft-version:
+    description: 'Syft release tag (only used when `install-tools: true`).'
+    required: false
+    default: 'v1.16.0'
+
+outputs:
+  sbom-path:
+    description: 'Path to the generated CycloneDX SBOM file (relative to the runner work dir).'
+    value: sbom-${{ inputs.image-name }}.cdx.json
+  sbom-outcome:
+    description: 'Outcome of the SBOM generation step (`success` / `failure` / `skipped`).'
+    value: ${{ steps.sbom.outcome }}
+  sign-outcome:
+    description: 'Outcome of the `cosign sign` step.'
+    value: ${{ steps.cosign_sign.outcome }}
+  attest-outcome:
+    description: 'Outcome of the `cosign attest` SBOM-attestation step.'
+    value: ${{ steps.cosign_attest.outcome }}
+  slsa-outcome:
+    description: 'Outcome of the `actions/attest-build-provenance` step.'
+    value: ${{ steps.slsa.outcome }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install cosign
+      if: inputs.install-tools == 'true'
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+      with:
+        cosign-release: ${{ inputs.cosign-version }}
+
+    - name: Install syft
+      if: inputs.install-tools == 'true'
+      uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
+      with:
+        syft-version: ${{ inputs.syft-version }}
+
+    - name: Generate CycloneDX SBOM (${{ inputs.image-name }})
+      id: sbom
+      continue-on-error: ${{ inputs.soft-fail == 'true' }}
+      shell: bash
+      env:
+        IMAGE_REF: ${{ inputs.image-ref }}
+        SBOM_PATH: sbom-${{ inputs.image-name }}.cdx.json
+      run: |
+        set -euo pipefail
+        syft scan "registry:${IMAGE_REF}" -o "cyclonedx-json=${SBOM_PATH}"
+        ls -lh "${SBOM_PATH}"
+
+    - name: Cosign sign (${{ inputs.image-name }}, keyless)
+      id: cosign_sign
+      continue-on-error: ${{ inputs.soft-fail == 'true' }}
+      shell: bash
+      env:
+        COSIGN_EXPERIMENTAL: "1"
+        IMAGE_REF: ${{ inputs.image-ref }}
+      run: |
+        set -euo pipefail
+        cosign sign --yes "${IMAGE_REF}"
+
+    - name: Cosign attest CycloneDX SBOM (${{ inputs.image-name }})
+      id: cosign_attest
+      if: steps.sbom.outcome == 'success' && steps.cosign_sign.outcome == 'success'
+      continue-on-error: ${{ inputs.soft-fail == 'true' }}
+      shell: bash
+      env:
+        COSIGN_EXPERIMENTAL: "1"
+        IMAGE_REF: ${{ inputs.image-ref }}
+        SBOM_PATH: sbom-${{ inputs.image-name }}.cdx.json
+      run: |
+        set -euo pipefail
+        cosign attest --yes \
+          --predicate "${SBOM_PATH}" \
+          --type cyclonedx \
+          "${IMAGE_REF}"
+
+    - name: SLSA build provenance (${{ inputs.image-name }})
+      id: slsa
+      continue-on-error: ${{ inputs.soft-fail == 'true' }}
+      uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
+      with:
+        subject-name: ${{ inputs.subject-name }}
+        subject-digest: ${{ inputs.subject-digest }}
+        # push-to-registry: false (default). attest-build-provenance@v4 also
+        # pushes the attestation to the OCI registry under the same `.att`
+        # tag that `cosign attest --type cyclonedx` writes, silently
+        # overwriting the SBOM attestation. Provenance lives in the GitHub
+        # attestation API instead (queryable via `gh attestation verify`);
+        # SBOM attestation stays in the registry for
+        # `cosign verify-attestation --type cyclonedx`.
