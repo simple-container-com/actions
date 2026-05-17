@@ -1,0 +1,245 @@
+name: SC Image Release (reusable)
+
+# Reusable workflow that absorbs the full one-image build → sign →
+# attest pipeline used across SC's release workflows (push.yaml,
+# branch-preview.yaml, build-staging.yml). Encapsulates ~10 steps per
+# image into a single `uses:` call from a matrix.
+#
+# Internally hardcodes the SHA of two sibling building blocks:
+#   - simple-container-com/actions/setup-sc-tooling
+#   - simple-container-com/actions/sign-and-attest
+# These pins are intentional — GitHub Actions does NOT permit
+# expressions in `uses:` ref positions, so the composites' refs must
+# be string literals. When either composite advances, this workflow's
+# `# SELF-REF` lines below need to bump in lockstep (one commit, two
+# edits). Both refs MUST resolve to the same actions-repo SHA so the
+# behaviour matches a consumer that pins all three together.
+#
+# REQUIRES the calling job to delegate via `uses: ... @ <sha>` at the
+# JOB level (reusable workflows can't be called from a step). Caller
+# also must NOT specify `permissions:` since this workflow declares
+# its own (id-token: write + attestations: write + contents: read).
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: 'Short logical name used in step labels + SBOM filename (e.g. `caddy`).'
+        required: true
+        type: string
+      image-repo:
+        description: 'Image repository WITHOUT tag (e.g. `simplecontainer/caddy`).'
+        required: true
+        type: string
+      dockerfile:
+        description: 'Path to Dockerfile relative to the consumer repo root (e.g. `caddy.Dockerfile`).'
+        required: true
+        type: string
+      tags:
+        description: 'Multiline list of tags to apply (one per line, e.g. `simplecontainer/caddy:latest\nsimplecontainer/caddy:2026.5.17`).'
+        required: true
+        type: string
+      platforms:
+        description: 'Build platforms for docker/build-push-action (default `linux/amd64`).'
+        required: false
+        type: string
+        default: 'linux/amd64'
+      runs-on:
+        description: 'Runner label. Default `ubuntu-24.04`. Set to `blacksmith-8vcpu-ubuntu-2204` for SC blacksmith runners.'
+        required: false
+        type: string
+        default: 'ubuntu-24.04'
+      download-artifact:
+        description: 'Optional GitHub Actions artifact name to download to `dist/` before the docker build (e.g. `github-actions-binary`). Empty (default) skips the download step.'
+        required: false
+        type: string
+        default: ''
+      download-artifact-path:
+        description: 'Path the downloaded artifact extracts to (default `dist`). Only used when `download-artifact` is set.'
+        required: false
+        type: string
+        default: 'dist'
+      install-welder:
+        description: 'Also install Welder via setup-sc-tooling (default `true`).'
+        required: false
+        type: boolean
+        default: true
+      docker-username:
+        description: 'Docker Hub username for `docker login` (default `simplecontainer`).'
+        required: false
+        type: string
+        default: 'simplecontainer'
+      docker-secret-stack:
+        description: 'SC stack to query for the docker-login password (default `dist`).'
+        required: false
+        type: string
+        default: 'dist'
+      docker-secret-name:
+        description: 'SC secret name to fetch via `sc stack secret-get` for the docker-login password (default `dockerhub-cicd-token`).'
+        required: false
+        type: string
+        default: 'dockerhub-cicd-token'
+      subject-name:
+        description: 'Override for `actions/attest-build-provenance` subject-name. Default is `index.docker.io/<image-repo>`; override if pushing to a non-Docker-Hub registry.'
+        required: false
+        type: string
+        default: ''
+      soft-fail:
+        description: 'When `true` (default during Phase 2 attestation bake-in), each sign/attest sub-step is `continue-on-error: true`. Set to `false` after 14 days of clean post-publish verification.'
+        required: false
+        type: boolean
+        default: true
+      upload-digest-artifact:
+        description: 'Whether to upload the `image-digest-<image-name>` artifact (consumed by the consumer''s verify-attestations workflow). Default `true`.'
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      sc-config:
+        description: 'Full SC_CONFIG YAML — written to `.sc/cfg.default.yaml` so `sc secrets reveal` + `sc stack secret-get` work.'
+        required: true
+    outputs:
+      image-digest:
+        description: 'sha256 digest of the published image (from docker/build-push-action).'
+        value: ${{ jobs.release.outputs.image-digest }}
+      sbom-outcome:
+        description: 'Outcome of the SBOM generation step inside sign-and-attest.'
+        value: ${{ jobs.release.outputs.sbom-outcome }}
+      sign-outcome:
+        description: 'Outcome of the cosign sign step.'
+        value: ${{ jobs.release.outputs.sign-outcome }}
+      attest-outcome:
+        description: 'Outcome of the cosign attest cyclonedx step.'
+        value: ${{ jobs.release.outputs.attest-outcome }}
+      slsa-outcome:
+        description: 'Outcome of the SLSA build-provenance step.'
+        value: ${{ jobs.release.outputs.slsa-outcome }}
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Build + sign ${{ inputs.image-name }}
+    runs-on: ${{ inputs.runs-on }}
+    permissions:
+      contents: read
+      id-token: write       # OIDC for cosign keyless + actions/attest-build-provenance
+      attestations: write   # actions/attest-build-provenance API
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      sbom-outcome: ${{ steps.signattest.outputs.sbom-outcome }}
+      sign-outcome: ${{ steps.signattest.outputs.sign-outcome }}
+      attest-outcome: ${{ steps.signattest.outputs.attest-outcome }}
+      slsa-outcome: ${{ steps.signattest.outputs.slsa-outcome }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Download build artifact (${{ inputs.download-artifact }})
+        if: inputs.download-artifact != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: ${{ inputs.download-artifact }}
+          path: ${{ inputs.download-artifact-path }}
+
+      - name: Setup SC tooling
+        # SELF-REF: bump in lockstep with sign-and-attest below.
+        uses: simple-container-com/actions/setup-sc-tooling@a374c76a33b5fd5a08687b9937c0e9e15aed55e2  # main
+        with:
+          install-welder: ${{ inputs.install-welder }}
+
+      - name: Prepare SC config + reveal secrets
+        env:
+          SC_CONFIG: ${{ secrets.sc-config }}
+        run: |
+          set -euo pipefail
+          mkdir -p ./.sc
+          printf '%s' "$SC_CONFIG" > ./.sc/cfg.default.yaml
+          # Optional companion config for test-aware steps in consumer
+          # workflows (push.yaml + build-staging.yml both write this).
+          printf '%s' "$SC_CONFIG" > ./.sc/cfg.test.yaml
+          sc secrets reveal
+
+      - name: Setup Docker Buildx with advanced caching
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
+        with:
+          driver-opts: |
+            image=moby/buildkit:buildx-stable-1
+
+      - name: Docker login (SC-managed registry token)
+        env:
+          DOCKER_USERNAME: ${{ inputs.docker-username }}
+          SECRET_STACK: ${{ inputs.docker-secret-stack }}
+          SECRET_NAME: ${{ inputs.docker-secret-name }}
+        run: |
+          set -euo pipefail
+          sc stack secret-get -s "$SECRET_STACK" "$SECRET_NAME" \
+            | docker login --username "$DOCKER_USERNAME" --password-stdin
+
+      - name: Build and push ${{ inputs.image-name }} image
+        id: build
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
+        with:
+          context: .
+          file: ${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          tags: ${{ inputs.tags }}
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # provenance is intentionally disabled in favor of
+          # actions/attest-build-provenance (see sign-and-attest below).
+          provenance: false
+
+      - name: Sign + attest ${{ inputs.image-name }} (SBOM + cosign + SLSA)
+        id: signattest
+        if: steps.build.outcome == 'success'
+        # SELF-REF: bump in lockstep with setup-sc-tooling above.
+        uses: simple-container-com/actions/sign-and-attest@a374c76a33b5fd5a08687b9937c0e9e15aed55e2  # main
+        with:
+          image-ref: ${{ inputs.image-repo }}@${{ steps.build.outputs.digest }}
+          image-name: ${{ inputs.image-name }}
+          subject-name: ${{ inputs.subject-name != '' && inputs.subject-name || format('index.docker.io/{0}', inputs.image-repo) }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          soft-fail: ${{ inputs.soft-fail && 'true' || 'false' }}
+
+      - name: Record image digest
+        if: inputs.upload-digest-artifact && steps.build.outcome == 'success'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_REPO: ${{ inputs.image-repo }}
+          IMAGE_NAME: ${{ inputs.image-name }}
+        run: |
+          set -euo pipefail
+          mkdir -p digests
+          printf '%s@%s\n' "$IMAGE_REPO" "$DIGEST" > "digests/${IMAGE_NAME}.txt"
+
+      - name: Upload digest artifact
+        if: inputs.upload-digest-artifact && steps.build.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: image-digest-${{ inputs.image-name }}
+          path: digests/${{ inputs.image-name }}.txt
+          retention-days: 1
+
+      - name: Soft-fail aggregator for ${{ inputs.image-name }} attestation
+        if: always() && steps.build.outcome == 'success'
+        env:
+          IMAGE_NAME: ${{ inputs.image-name }}
+          SIGN_OUTCOME: ${{ steps.signattest.outputs.sign-outcome }}
+          SBOM_OUTCOME: ${{ steps.signattest.outputs.sbom-outcome }}
+          ATTEST_OUTCOME: ${{ steps.signattest.outputs.attest-outcome }}
+          SLSA_OUTCOME: ${{ steps.signattest.outputs.slsa-outcome }}
+        run: |
+          fail=0
+          for v in "$SIGN_OUTCOME" "$SBOM_OUTCOME" "$ATTEST_OUTCOME" "$SLSA_OUTCOME"; do
+            if [ "$v" != "success" ]; then fail=1; fi
+          done
+          if [ "$fail" -eq 1 ]; then
+            echo "::warning title=Attestation incomplete::${IMAGE_NAME} published but one or more attestation steps failed (sign=${SIGN_OUTCOME} sbom=${SBOM_OUTCOME} attest=${ATTEST_OUTCOME} slsa=${SLSA_OUTCOME}). See the consumer's verify-attestations workflow."
+          else
+            echo "All attestation steps succeeded for ${IMAGE_NAME}."
+          fi
