@@ -94,6 +94,11 @@ on:
         required: false
         type: boolean
         default: true
+      disable-ipv6:
+        description: 'Run `sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1` before docker login. Workaround for Blacksmith runners whose IPv6 path to Docker Hub is broken; harmless on other runners but unnecessary. Default `false`.'
+        required: false
+        type: boolean
+        default: false
     secrets:
       sc-config:
         description: 'Full SC_CONFIG YAML — written to `.sc/cfg.default.yaml` so `sc secrets reveal` + `sc stack secret-get` work.'
@@ -168,6 +173,10 @@ jobs:
         with:
           driver-opts: |
             image=moby/buildkit:buildx-stable-1
+
+      - name: Disable IPv6 (Blacksmith runner Docker Hub workaround)
+        if: inputs.disable-ipv6
+        run: sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
 
       - name: Docker login (SC-managed registry token)
         env:
