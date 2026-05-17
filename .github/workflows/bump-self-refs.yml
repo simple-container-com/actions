@@ -8,12 +8,41 @@ name: Bump SELF-REF SHAs
 # commit. Maintainer merges the PR; consumers' Dependabot then bumps the
 # `sc-image-release.yml@<sha>` ref in turn.
 #
-# Loop guard: skipped when the triggering commit's message starts with
-# `chore(self-refs):` (the auto-bump's own merge commit).
+# Loop avoidance — two complementary defences:
+#
+#   1. `paths:` filter (below). The workflow only fires when a file
+#      INSIDE one of the SELF-REF target directories changes. The
+#      chore(self-refs) PR's own merge commit touches `*.yml` files at
+#      the repo root + .github/workflows/ — NOT the action.yml files
+#      under setup-sc-tooling/ etc. — so the merge commit does not
+#      re-trigger this workflow. This is the structural fix; without
+#      it, a chore-merge would re-run and generate another chore PR
+#      ad infinitum.
+#
+#   2. `contains('chore(self-refs):')` guard on the head-commit
+#      message. Belt-and-braces against an edge case where someone
+#      restructures the repo so a chore-merge commit also touches a
+#      SELF-REF target path. Uses `contains` (not `startsWith`)
+#      because the actions repo uses merge-commit style — the head-
+#      commit message looks like `Merge pull request #N from chore/
+#      bump-self-refs-<sha>\n\nchore(self-refs): bump …`, so the
+#      marker is in the body, not the title.
 
 on:
   push:
     branches: [main]
+    paths:
+      # Files that, if changed, MAY require a SELF-REF bump downstream.
+      # Composite actions that are referenced via SELF-REF markers.
+      - 'setup-sc-tooling/**'
+      - 'sign-and-attest/**'
+      - 'install-sc/**'
+      - 'install-welder/**'
+      - 'install-attest-tools/**'
+      - 'notify-telegram/**'
+      # This workflow itself — so a change to the bump logic is exercised
+      # on the next merge.
+      - '.github/workflows/bump-self-refs.yml'
   workflow_dispatch:
 
 permissions:
@@ -23,7 +52,7 @@ jobs:
   bump:
     name: Bump SELF-REF SHAs
     runs-on: ubuntu-24.04
-    if: ${{ !startsWith(github.event.head_commit.message, 'chore(self-refs):') }}
+    if: ${{ !contains(github.event.head_commit.message, 'chore(self-refs):') }}
     permissions:
       contents: write       # push the auto-bump branch
       pull-requests: write  # open the PR
