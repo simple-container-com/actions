@@ -5,15 +5,14 @@ name: SC Image Release (reusable)
 # branch-preview.yaml, build-staging.yml). Encapsulates ~10 steps per
 # image into a single `uses:` call from a matrix.
 #
-# Internally hardcodes the SHA of two sibling building blocks:
-#   - simple-container-com/actions/setup-sc-tooling
-#   - simple-container-com/actions/sign-and-attest
-# These pins are intentional — GitHub Actions does NOT permit
-# expressions in `uses:` ref positions, so the composites' refs must
-# be string literals. When either composite advances, this workflow's
-# `# SELF-REF` lines below need to bump in lockstep (one commit, two
-# edits). Both refs MUST resolve to the same actions-repo SHA so the
-# behaviour matches a consumer that pins all three together.
+# Internal references to sibling composites (`./setup-sc-tooling`,
+# `./sign-and-attest`) use **native relative paths**, which GHA
+# resolves against the same repo + ref the consumer pinned this
+# workflow to. That makes the inner pin chain atomic: consumer pins
+# ONE SHA at the `uses:` call site for this workflow, and every
+# sibling composite it references resolves to that exact SHA. No
+# `# SELF-REF` annotations, no `bump-self-refs` automation, no
+# Dependabot-vs-self-references gymnastics.
 #
 # REQUIRES the calling job to delegate via `uses: ... @ <sha>` at the
 # JOB level (reusable workflows can't be called from a step). Caller
@@ -151,8 +150,10 @@ jobs:
           path: ${{ inputs.download-artifact-path }}
 
       - name: Setup SC tooling
-        # SELF-REF: bump in lockstep with sign-and-attest below.
-        uses: simple-container-com/actions/setup-sc-tooling@a374c76a33b5fd5a08687b9937c0e9e15aed55e2  # main
+        # Native relative path — GHA resolves `./<path>` inside a
+        # reusable workflow against the same repo + ref the consumer
+        # pinned this workflow to. Atomic by construction.
+        uses: ./setup-sc-tooling
         with:
           install-welder: ${{ inputs.install-welder }}
 
@@ -206,8 +207,8 @@ jobs:
       - name: Sign + attest ${{ inputs.image-name }} (SBOM + cosign + SLSA)
         id: signattest
         if: steps.build.outcome == 'success'
-        # SELF-REF: bump in lockstep with setup-sc-tooling above.
-        uses: simple-container-com/actions/sign-and-attest@a374c76a33b5fd5a08687b9937c0e9e15aed55e2  # main
+        # Native relative path (same model as Setup SC tooling above).
+        uses: ./sign-and-attest
         with:
           image-ref: ${{ inputs.image-repo }}@${{ steps.build.outputs.digest }}
           image-name: ${{ inputs.image-name }}
