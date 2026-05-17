@@ -1,0 +1,147 @@
+name: Bump SELF-REF SHAs
+
+# Closes the SELF-REF recursion loop in this repo. When sc-image-release.yml
+# (or any future workflow / composite) references a sibling action of this
+# same repo by SHA, that SHA is annotated with a `# SELF-REF` trailing
+# comment. This workflow runs on push-to-main, scans for those markers, and
+# opens a PR that rewrites every SELF-REF SHA to point at the just-merged
+# commit. Maintainer merges the PR; consumers' Dependabot then bumps the
+# `sc-image-release.yml@<sha>` ref in turn.
+#
+# Loop guard: skipped when the triggering commit's message starts with
+# `chore(self-refs):` (the auto-bump's own merge commit).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    name: Bump SELF-REF SHAs
+    runs-on: ubuntu-24.04
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore(self-refs):') }}
+    permissions:
+      contents: write       # push the auto-bump branch
+      pull-requests: write  # open the PR
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0  # need history for git push
+
+      - name: Rewrite SELF-REF SHAs to current main
+        id: rewrite
+        env:
+          NEW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Find all yml/yaml files that contain a SELF-REF marker.
+          mapfile -t files < <(grep -rlE 'SELF-REF' \
+                                 --include='*.yml' --include='*.yaml' . 2>/dev/null || true)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo 'No SELF-REF markers found; nothing to bump.'
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Scanning ${#files[@]} file(s) for SELF-REF lines:"
+          printf '  - %s\n' "${files[@]}"
+
+          for f in "${files[@]}"; do
+            # Rewrite any `uses: simple-container-com/actions/<path>@<40hex> # SELF-REF...`
+            # line to point at $NEW_SHA. Each substitution preserves the
+            # trailing `# SELF-REF...` annotation. Python keeps the regex
+            # readable + handles multi-line files without sed escaping pain.
+            FILE="$f" NEW_SHA="$NEW_SHA" python3 - <<'PY'
+          import os, re, pathlib
+          path = pathlib.Path(os.environ['FILE'])
+          new_sha = os.environ['NEW_SHA']
+          text = path.read_text()
+          pattern = re.compile(
+              r'(uses:\s+simple-container-com/actions/[^@\s]+@)'
+              r'([a-f0-9]{40})'
+              r'(\s*#[^\n]*SELF-REF[^\n]*)',
+              re.MULTILINE,
+          )
+          new_text, n = pattern.subn(
+              lambda m: m.group(1) + new_sha + m.group(3),
+              text,
+          )
+          if new_text != text:
+              path.write_text(new_text)
+              print(f'BUMPED {path}: {n} ref(s)')
+          PY
+          done
+
+          if git diff --quiet; then
+            echo 'SELF-REFs already at the current main SHA; no bump needed.'
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+            echo 'Files modified:'
+            git diff --name-only
+          fi
+
+      - name: Create / update auto-bump PR
+        if: steps.rewrite.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          SHORT="${NEW_SHA:0:10}"
+          BRANCH="chore/bump-self-refs-${SHORT}"
+
+          # GitHub-Actions bot identity for the commit.
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          # If a PR already exists for this branch (a previous main commit
+          # already opened one but it wasn't merged before another main commit
+          # landed), force-push the updated rewrite onto the same branch and
+          # update the PR title — that keeps the PR queue clean.
+          if git fetch origin "$BRANCH" 2>/dev/null; then
+            git checkout -B "$BRANCH" "origin/$BRANCH"
+            # Re-apply the rewrites onto the latest branch state (rebase logic
+            # is unnecessary: the rewrite is idempotent on the file content).
+            git checkout - -- .
+          else
+            git checkout -b "$BRANCH"
+          fi
+
+          git add -A
+          git commit -m "chore(self-refs): bump SELF-REF SHAs to ${SHORT}"
+
+          # Authenticate gh CLI with the workflow token + push the branch.
+          # peter-evans/create-pull-request would also work but pulling in a
+          # third-party action for ~5 gh CLI calls isn't worth the SHA pin.
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push --force-with-lease origin "$BRANCH"
+
+          # Open or update the PR. `gh pr create` is a no-op if a PR already
+          # exists for (head=$BRANCH, base=main); fall back to `gh pr edit`.
+          if ! gh pr create \
+                --title "chore(self-refs): bump SELF-REF SHAs to ${SHORT}" \
+                --body "Auto-bump by \`.github/workflows/bump-self-refs.yml\`.
+
+          The SELF-REF SHAs in this repo's reusable workflows + composite actions are rewritten to point at the just-merged commit \`${NEW_SHA}\`. Closes the documented [recursive-pin loop](../blob/main/.github/workflows/bump-self-refs.yml) by hand-bumping no longer being required.
+
+          Loop guard: this workflow skips when the triggering commit's message starts with \`chore(self-refs):\` (this PR's own merge commit)." \
+                --base main \
+                --head "$BRANCH" \
+                --label dependencies \
+                --label automated 2>&1; then
+            # PR already exists; update its title to the latest SHA.
+            PR_NUMBER="$(gh pr list --head "$BRANCH" --base main --json number --jq '.[0].number')"
+            if [ -n "$PR_NUMBER" ]; then
+              gh pr edit "$PR_NUMBER" \
+                --title "chore(self-refs): bump SELF-REF SHAs to ${SHORT}"
+              echo "Updated existing PR #${PR_NUMBER}"
+            fi
+          fi
