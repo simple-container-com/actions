@@ -125,52 +125,45 @@ jobs:
         run: |
           set -euo pipefail
           SHORT="${NEW_SHA:0:10}"
-          BRANCH="chore/bump-self-refs-${SHORT}"
+          # Single fixed branch — force-pushed on each run. Keeps the PR
+          # queue to ONE open chore(self-refs) PR even when several
+          # SELF-REF-target commits land back-to-back. The PR's diff
+          # always reflects the latest main HEAD.
+          BRANCH='chore/bump-self-refs'
 
           # GitHub-Actions bot identity for the commit.
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
-          # If a PR already exists for this branch (a previous main commit
-          # already opened one but it wasn't merged before another main commit
-          # landed), force-push the updated rewrite onto the same branch and
-          # update the PR title — that keeps the PR queue clean.
-          if git fetch origin "$BRANCH" 2>/dev/null; then
-            git checkout -B "$BRANCH" "origin/$BRANCH"
-            # Re-apply the rewrites onto the latest branch state (rebase logic
-            # is unnecessary: the rewrite is idempotent on the file content).
-            git checkout - -- .
-          else
-            git checkout -b "$BRANCH"
-          fi
-
+          git checkout -b "$BRANCH"
           git add -A
           git commit -m "chore(self-refs): bump SELF-REF SHAs to ${SHORT}"
 
-          # Authenticate gh CLI with the workflow token + push the branch.
-          # peter-evans/create-pull-request would also work but pulling in a
-          # third-party action for ~5 gh CLI calls isn't worth the SHA pin.
+          # Force-push so the branch always reflects the latest main HEAD.
+          # `--force-with-lease` prevents clobbering an in-flight push from
+          # a concurrent run (extremely unlikely on a single repo's main
+          # but cheap insurance).
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push --force-with-lease origin "$BRANCH"
 
-          # Open or update the PR. `gh pr create` is a no-op if a PR already
-          # exists for (head=$BRANCH, base=main); fall back to `gh pr edit`.
-          if ! gh pr create \
-                --title "chore(self-refs): bump SELF-REF SHAs to ${SHORT}" \
-                --body "Auto-bump by \`.github/workflows/bump-self-refs.yml\`.
+          # Open or update the PR.
+          PR_NUMBER="$(gh pr list --head "$BRANCH" --base main --json number --jq '.[0].number // empty')"
+          if [ -z "$PR_NUMBER" ]; then
+            gh pr create \
+              --title "chore(self-refs): bump SELF-REF SHAs to ${SHORT}" \
+              --body "Auto-bump by \`.github/workflows/bump-self-refs.yml\` triggered by commit \`${NEW_SHA}\`.
 
-          The SELF-REF SHAs in this repo's reusable workflows + composite actions are rewritten to point at the just-merged commit \`${NEW_SHA}\`. Closes the documented [recursive-pin loop](../blob/main/.github/workflows/bump-self-refs.yml) by hand-bumping no longer being required.
+          The SELF-REF SHAs in this repo's reusable workflows + composite actions are rewritten to point at the latest main HEAD, so a maintainer merging this PR re-aligns the inner pin chain in one click. Closes the documented recursive-pin loop (see workflow header for the full design).
 
-          Loop guard: this workflow skips when the triggering commit's message starts with \`chore(self-refs):\` (this PR's own merge commit)." \
-                --base main \
-                --head "$BRANCH" \
-                --label dependencies \
-                --label automated 2>&1; then
-            # PR already exists; update its title to the latest SHA.
-            PR_NUMBER="$(gh pr list --head "$BRANCH" --base main --json number --jq '.[0].number')"
-            if [ -n "$PR_NUMBER" ]; then
-              gh pr edit "$PR_NUMBER" \
-                --title "chore(self-refs): bump SELF-REF SHAs to ${SHORT}"
-              echo "Updated existing PR #${PR_NUMBER}"
-            fi
+          This PR uses a fixed branch (\`chore/bump-self-refs\`) and is force-pushed on every run — only one auto-bump PR exists at any time, always reflecting the latest main HEAD." \
+              --base main \
+              --head "$BRANCH" \
+              --label dependencies \
+              --label automated
+          else
+            # PR already exists; force-push already updated the branch.
+            # Refresh title with the latest short SHA for at-a-glance clarity.
+            gh pr edit "$PR_NUMBER" \
+              --title "chore(self-refs): bump SELF-REF SHAs to ${SHORT}"
+            echo "Updated existing PR #${PR_NUMBER}"
           fi
