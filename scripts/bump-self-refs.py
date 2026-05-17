@@ -38,16 +38,32 @@ import sys
 
 SHA_RE = re.compile(r"[a-f0-9]{40}")
 
-# Pattern for a SELF-REF line. Matches:
-#     uses:  <one or more whitespace>
-#     simple-container-com/actions/<path-without-@-or-whitespace>
-#     @<40 hex>
-#     <optional whitespace>
-#     # ...SELF-REF...   (trailing comment, preserved verbatim)
-SELF_REF_RE = re.compile(
+# Two ways the SELF-REF marker can be placed in a workflow / composite:
+#
+#   A) Same-line:   uses: <path>@<sha>  # SELF-REF: <text>
+#   B) Preceding:   # SELF-REF: <text>
+#                   uses: <path>@<sha>  # <any-other-comment>
+#
+# Both are supported. The script applies BOTH regexes per file; each is
+# idempotent (re-running on the same content is a no-op).
+
+# (A) SELF-REF annotation on the SAME line as `uses:`.
+SAME_LINE_RE = re.compile(
     r"(uses:\s+simple-container-com/actions/[^@\s]+@)"
     r"([a-f0-9]{40})"
     r"(\s*#[^\n]*SELF-REF[^\n]*)",
+    re.MULTILINE,
+)
+
+# (B) SELF-REF comment on the line IMMEDIATELY PRECEDING the `uses:`.
+# Allows arbitrary whitespace before the `#` (same indentation as `uses:`).
+# The `uses:` line's trailing comment (e.g. `# main`) is preserved
+# verbatim via the third capture group.
+PRECEDING_LINE_RE = re.compile(
+    r"^([ \t]*#[ \t]*SELF-REF[^\n]*\n"
+    r"[ \t]*uses:[ \t]+simple-container-com/actions/[^@\s]+@)"
+    r"([a-f0-9]{40})"
+    r"([^\n]*)$",
     re.MULTILINE,
 )
 
@@ -77,15 +93,24 @@ def find_self_ref_files() -> list[pathlib.Path]:
 
 
 def rewrite_file(path: pathlib.Path, new_sha: str) -> int:
-    """Rewrite SELF-REF SHAs in `path` to `new_sha`. Returns # of replacements."""
+    """Rewrite SELF-REF SHAs in `path` to `new_sha`. Returns # of replacements.
+
+    Applies both the same-line and preceding-line regex patterns
+    (see SAME_LINE_RE / PRECEDING_LINE_RE).
+    """
     text = path.read_text()
-    new_text, n = SELF_REF_RE.subn(
+    new_text, n_same = SAME_LINE_RE.subn(
         lambda m: m.group(1) + new_sha + m.group(3),
         text,
     )
-    if n and new_text != text:
+    new_text, n_preceding = PRECEDING_LINE_RE.subn(
+        lambda m: m.group(1) + new_sha + m.group(3),
+        new_text,
+    )
+    total = n_same + n_preceding
+    if total and new_text != text:
         path.write_text(new_text)
-    return n
+    return total
 
 
 def open_or_update_pr(new_sha: str, short_sha: str) -> None:
