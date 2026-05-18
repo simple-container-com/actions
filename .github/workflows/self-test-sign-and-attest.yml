@@ -37,7 +37,7 @@ jobs:
           persist-credentials: false
 
       - name: Log in to ghcr.io
-        uses: docker/login-action@327cd5a69de6c009b9ce71bce8395f28e651bf99  # v3.6.0
+        uses: docker/login-action@9f4a8ea54ed9055d5f86c993e1f2ffa674f98344  # v3.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
