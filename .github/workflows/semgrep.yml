@@ -86,7 +86,25 @@ jobs:
     name: Semgrep Status
     runs-on: ubuntu-24.04
     needs: [semgrep-scan]
-    if: always()
+    # `!cancelled()` lets Status run after semgrep-scan completed
+    # (success/failure) but SKIPS it when the scan was cancelled —
+    # which in practice means the whole workflow run was superseded
+    # by concurrency (a newer event for the same SHA). A skipped
+    # Status produces a NEUTRAL check_run, which branch protection
+    # treats as not-failing; the surviving run's Status reports
+    # SUCCESS and gates the merge.
+    #
+    # Before this change: `if: always()` made Status run even on
+    # upstream cancellation, evaluate `result=cancelled` as a hard
+    # error, and emit a FAILURE check_run that blocked the PR even
+    # though the parallel non-cancelled run was clean.
+    #
+    # The original concern (a fork PR cancelling its own scan to
+    # bypass coverage) is mitigated separately: fork PRs do not
+    # receive secrets, Semgrep is read-only, and a maintainer
+    # reviewing the PR would still see the cancellation in the
+    # check-rollup before merging.
+    if: ${{ !cancelled() }}
 
     steps:
       - name: Evaluate Semgrep results
