@@ -51,6 +51,48 @@ rules:
   # security decisions). Taint-aware coverage for the cases that DO matter
   # (untrusted-source flow → unmarshal) lives in the `p/golang` registry
   # pack opted into via .github/workflows/semgrep.yml.
+  #
+  # The registry's `unsafe-deserialization-interface` rule is calibrated
+  # to Python's pickle/yaml.load (which executes code on unmarshal). Go's
+  # `gopkg.in/yaml.v3` and `encoding/json` do NOT execute on unmarshal;
+  # the threat model is fundamentally different. Consumers should disable
+  # that rule via the reusable-workflow `disabled-rules:` input when its
+  # findings consist entirely of obfuscation/diff tooling sites. The
+  # genuine `untrusted → unmarshal → exec` shape is covered by separate
+  # taint rules in `p/golang`.
+
+  - id: go-md5-in-crypto-context
+    message: >-
+      MD5 is being used in a cryptographic context (HMAC construction or
+      a variable whose name suggests integrity/auth — `mac`, `sig`,
+      `signature`, `tag`, `hmac`, `auth`, `token`, `password`, `digest`).
+      MD5 is collision-broken (Wang 2004) and supports length-extension
+      attacks; it must not be used for integrity, authentication, or
+      signing. Use SHA-256 with HMAC for MAC, Ed25519 for signing, or
+      Argon2id for password hashing. MD5 for non-cryptographic
+      fingerprinting (content-addressed keys, change-detection,
+      cache-buster hashes) is NOT flagged — that's why the broad gosec
+      `use-of-md5` rule is disabled at the consumer level.
+    severity: ERROR
+    languages: [go]
+    paths:
+      include: ["**/*.go"]
+      exclude: ["**/*_test.go"]
+    pattern-either:
+      # Direct: MD5 used as the hash inside HMAC.
+      - pattern: hmac.New(md5.New, ...)
+      # `mac := md5.New()` / `signature := md5.New()` / etc.
+      - patterns:
+          - pattern: $VAR := md5.New()
+          - metavariable-regex:
+              metavariable: $VAR
+              regex: '^(mac|hmac|sig|signature|tag|auth|token|password|digest)$'
+      # `mac := md5.Sum(...)` / `signature := md5.Sum(...)` / etc.
+      - patterns:
+          - pattern: $VAR := md5.Sum(...)
+          - metavariable-regex:
+              metavariable: $VAR
+              regex: '^(mac|hmac|sig|signature|tag|auth|token|password|digest)$'
 
   - id: go-jwt-parse-unverified
     message: >-

@@ -16,6 +16,7 @@ set -euo pipefail
 
 CONSUMER_RULES="${CONSUMER_RULES:-}"
 REGISTRY_PACKS="${REGISTRY_PACKS:-}"
+DISABLED_RULES="${DISABLED_RULES:-}"
 FAIL_ON_SEVERITY="${FAIL_ON_SEVERITY:-ERROR}"
 
 # Validate image ref shape.
@@ -42,6 +43,16 @@ fi
 if [ -n "$REGISTRY_PACKS" ]; then
   if ! printf '%s' "$REGISTRY_PACKS" | grep -qE '^[A-Za-z0-9._/-]+(,[A-Za-z0-9._/-]+)*$'; then
     echo "::error::REGISTRY_PACKS contains forbidden characters: '$REGISTRY_PACKS'"
+    exit 1
+  fi
+fi
+
+# Validate disabled rules: comma-separated Semgrep rule IDs.
+# Rule IDs are dotted paths like
+# `go.lang.security.audit.crypto.use_of_weak_crypto.use-of-md5`.
+if [ -n "$DISABLED_RULES" ]; then
+  if ! printf '%s' "$DISABLED_RULES" | grep -qE '^[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*$'; then
+    echo "::error::DISABLED_RULES contains forbidden characters: '$DISABLED_RULES'"
     exit 1
   fi
 fi
@@ -99,6 +110,17 @@ if [ -n "$REGISTRY_PACKS" ]; then
   done
 fi
 
+# Build --exclude-rule arguments. Each ID is forwarded as its own flag —
+# Semgrep doesn't accept comma-joined values here.
+exclude_rules=()
+if [ -n "$DISABLED_RULES" ]; then
+  IFS=',' read -ra disabled <<< "$DISABLED_RULES"
+  for rid in "${disabled[@]}"; do
+    exclude_rules+=('--exclude-rule' "$rid")
+    echo "Disabling rule: $rid"
+  done
+fi
+
 # Run Semgrep. Mount workspace and action dir read-only; never execute code.
 # We deliberately don't pass --error here so the script can capture the JSON
 # and emit per-severity outputs; the orchestrator status job decides on fail.
@@ -117,6 +139,7 @@ docker run --rm \
   "$SEMGREP_IMAGE" \
   semgrep scan \
   "${configs[@]}" \
+  ${exclude_rules[@]+"${exclude_rules[@]}"} \
   --metrics=off \
   --json \
   --output /output/results.json \

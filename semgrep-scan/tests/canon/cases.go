@@ -11,6 +11,8 @@ package canonfixtures
 import (
 	"bytes"
 	"crypto/cipher"
+	"crypto/hmac"
+	"crypto/md5"
 	"crypto/tls"
 	"net/http"
 	"os/exec"
@@ -187,4 +189,75 @@ func execUntrustedWithEnvSet() {
 	cmd := exec.Command("/opt/risky/scanner", "--scan")
 	cmd.Env = []string{"PATH=/usr/bin"}
 	_ = cmd.Run()
+}
+
+// --------------------------------------------------------------------
+// go-md5-in-crypto-context
+// --------------------------------------------------------------------
+// Fires only when MD5 is used in a cryptographic context — HMAC
+// construction, or a variable whose name suggests integrity/auth.
+// Non-cryptographic fingerprint uses (checksum, etag, fingerprint,
+// cache-buster, annotation hash, content-addressed key) are NOT
+// flagged here; the broad gosec `use-of-md5` rule that fires on those
+// is disabled at the consumer level.
+
+func md5InsideHmac(key []byte) {
+	// MD5 fed into hmac.New — bona fide cryptographic use, MD5 is the
+	// wrong primitive. SHOULD fire.
+	// ruleid: go-md5-in-crypto-context
+	_ = hmac.New(md5.New, key)
+}
+
+func md5AsMACVariable() {
+	// Variable name `mac` says this is a Message Authentication Code.
+	// SHOULD fire.
+	// ruleid: go-md5-in-crypto-context
+	mac := md5.New()
+	_ = mac
+}
+
+func md5AsSignatureSum(content []byte) [16]byte {
+	// Variable name `signature` says this is a signing primitive.
+	// SHOULD fire.
+	// ruleid: go-md5-in-crypto-context
+	signature := md5.Sum(content)
+	return signature
+}
+
+func md5AsPasswordSum(pw []byte) [16]byte {
+	// Variable name `password` says this is password hashing — also wrong.
+	// SHOULD fire.
+	// ruleid: go-md5-in-crypto-context
+	password := md5.Sum(pw)
+	return password
+}
+
+func md5AsChecksum(content []byte) [16]byte {
+	// Non-cryptographic content fingerprint. MUST NOT fire — that's the
+	// whole reason we ship this narrower rule.
+	// ok: go-md5-in-crypto-context
+	checksum := md5.Sum(content)
+	return checksum
+}
+
+func md5AsEtag(content []byte) [16]byte {
+	// S3 etag-style content addressing. MUST NOT fire.
+	// ok: go-md5-in-crypto-context
+	etag := md5.Sum(content)
+	return etag
+}
+
+func md5AsAnnotationHash(caddyfile []byte) [16]byte {
+	// Kubernetes annotation value for change detection (used by SC's
+	// Caddy-update-hash annotation). MUST NOT fire.
+	// ok: go-md5-in-crypto-context
+	hashBytes := md5.Sum(caddyfile)
+	return hashBytes
+}
+
+func md5SumInExpression(content []byte) [16]byte {
+	// `md5.Sum(...)` used inline — no variable name to inspect → no fire.
+	// MUST NOT fire.
+	// ok: go-md5-in-crypto-context
+	return md5.Sum(content)
 }
