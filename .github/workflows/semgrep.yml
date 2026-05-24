@@ -27,6 +27,11 @@ on:
         required: false
         default: ''
         type: string
+      disabled-rules:
+        description: 'Comma-separated Semgrep rule IDs (dotted check_id) to suppress via `--exclude-rule`. Use for org-wide registry-pack noise; per-call FPs should use inline `// nosemgrep:` instead.'
+        required: false
+        default: ''
+        type: string
       fail-on-severity:
         description: 'Lowest severity that fails the workflow (ERROR / WARNING / INFO).'
         required: false
@@ -63,6 +68,7 @@ jobs:
         with:
           consumer-rules: ${{ inputs.consumer-rules }}
           registry-packs: ${{ inputs.registry-packs }}
+          disabled-rules: ${{ inputs.disabled-rules }}
           fail-on-severity: ${{ inputs.fail-on-severity }}
 
   build-comment:

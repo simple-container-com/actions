@@ -14,6 +14,17 @@ inputs:
     description: 'Comma-separated list of Semgrep registry pack identifiers (e.g. "p/security-audit,p/python") to include. Empty by default — registry packs are mutable upstream and should be opted in deliberately.'
     required: false
     default: ''
+  disabled-rules:
+    description: |
+      Comma-separated list of Semgrep rule IDs to suppress via `--exclude-rule`.
+      Use the full dotted check_id (e.g.
+      `go.lang.security.audit.crypto.use_of_weak_crypto.use-of-md5`). Intended
+      for registry-pack rules whose threat model doesn't apply to SC code
+      (e.g. MD5 used as a non-cryptographic fingerprint, untyped-yaml-unmarshal
+      used only for log obfuscation). Prefer per-call `// nosemgrep:` for
+      site-specific FPs; this knob is for org-wide noise.
+    required: false
+    default: ''
   fail-on-severity:
     description: 'Lowest severity that fails the action (ERROR / WARNING / INFO). Default ERROR.'
     required: false
@@ -46,6 +57,7 @@ runs:
         SEMGREP_IMAGE: ${{ inputs.semgrep-image }}
         CONSUMER_RULES: ${{ inputs.consumer-rules }}
         REGISTRY_PACKS: ${{ inputs.registry-packs }}
+        DISABLED_RULES: ${{ inputs.disabled-rules }}
         FAIL_ON_SEVERITY: ${{ inputs.fail-on-severity }}
         ACTION_PATH: ${{ github.action_path }}
       run: ${{ github.action_path }}/scan.sh
