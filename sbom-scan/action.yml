@@ -5,6 +5,10 @@ inputs:
   sbom-file:
     description: 'Absolute path to the CycloneDX JSON SBOM to scan.'
     required: true
+  vex-files:
+    description: 'Optional whitespace-separated list of OpenVEX 0.2.0 documents to pass to both Trivy and Grype as `--vex <path>`. Statements with `status: not_affected` or `status: fixed` matching the SBOM components are suppressed at the scanner. Each path must be absolute, or relative to the calling repo''s working directory. Missing files are skipped with a warning (non-fatal) so a stale workflow input cannot break unrelated PRs. Empty (default) → both scanners run unchanged. See the consumer-side `.sc/vex/README.md` (or equivalent) for the per-scanner shape gotchas (dual product shape + CVE/GHSA dual-keyed statements) that the VEX content itself must respect.'
+    required: false
+    default: ''
   trivy-image:
     description: 'Pinned Trivy Docker image reference.'
     required: false
@@ -48,6 +52,7 @@ runs:
       shell: bash
       env:
         SBOM_FILE: ${{ inputs.sbom-file }}
+        VEX_FILES: ${{ inputs.vex-files }}
         TRIVY_IMAGE: ${{ inputs.trivy-image }}
         GRYPE_IMAGE: ${{ inputs.grype-image }}
       run: ${{ github.action_path }}/scan.sh
