@@ -54,6 +54,24 @@ on:
         required: false
         default: ''
         type: string
+      vex-files:
+        description: |
+          Optional whitespace-separated list of OpenVEX 0.2.0 documents
+          (paths relative to the consumer repo root) to pass to both
+          Trivy and Grype during the SBOM scan. Statements with
+          `status: not_affected` or `status: fixed` matching the SBOM's
+          components are suppressed at the scanner — no `.trivyignore`,
+          no DefectDojo-side ignore rules. Empty (default) → the SBOM
+          job auto-discovers any `.sc/vex/*.openvex.json` files in the
+          consumer checkout and uses those. Pass a single path or
+          space-separated list to override the discovery. Missing files
+          are skipped with a non-fatal warning so a stale input cannot
+          break unrelated PRs. See the consumer-side `.sc/vex/README.md`
+          for the per-scanner shape gotchas (dual product shape +
+          CVE/GHSA dual-keyed statements).
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: security-scan-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
@@ -113,11 +131,51 @@ jobs:
         id: sbom
         uses: simple-container-com/actions/sbom-generate@main
 
+      # Discover OpenVEX documents to thread into Trivy + Grype.
+      # If the caller passed `vex-files` explicitly, honour that verbatim
+      # (paths reach the action through env, never inlined into `run:`).
+      # Otherwise auto-discover `.sc/vex/*.openvex.json` in the consumer
+      # checkout. Empty result → both scanners run unchanged (no-op).
+      - name: Discover OpenVEX documents
+        id: vex
+        shell: bash
+        env:
+          INPUT_VEX_FILES: ${{ inputs.vex-files }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_VEX_FILES:-}" ]; then
+            echo "Using caller-provided vex-files input."
+            VEX_LIST="$INPUT_VEX_FILES"
+          elif compgen -G '.sc/vex/*.openvex.json' > /dev/null; then
+            # Use NUL-terminated find + tr to whitespace so filenames with
+            # exotic characters can't break the for-loop downstream.
+            VEX_LIST=$(printf '%s\n' .sc/vex/*.openvex.json | tr '\n' ' ')
+            echo "Auto-discovered OpenVEX docs under .sc/vex/: $VEX_LIST"
+          else
+            echo "No OpenVEX documents in .sc/vex/ — scanners will run without --vex."
+            VEX_LIST=""
+          fi
+          # Resolve relative paths to absolute (relative to the consumer
+          # checkout root, which is the workflow's current working dir).
+          ABS_LIST=""
+          for p in $VEX_LIST; do
+            if [ -f "$p" ]; then
+              abs="$(cd "$(dirname -- "$p")" && pwd)/$(basename -- "$p")"
+              ABS_LIST+="$abs "
+            else
+              echo "::warning::VEX file declared but missing on disk: $p"
+            fi
+          done
+          # Trim trailing space (cosmetic) and emit single-line output.
+          ABS_LIST="${ABS_LIST% }"
+          echo "vex-files=$ABS_LIST" >> "$GITHUB_OUTPUT"
+
       - name: SBOM vulnerability scan
         id: scan
         uses: simple-container-com/actions/sbom-scan@main
         with:
           sbom-file: ${{ steps.sbom.outputs.sbom-file }}
+          vex-files: ${{ steps.vex.outputs.vex-files }}
 
   build-comment:
     name: Build PR Comment Body

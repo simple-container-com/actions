@@ -36,16 +36,65 @@ mkdir -p "$OUTPUT_DIR"
 TRIVY_LOG="$OUTPUT_DIR/trivy.log"
 GRYPE_LOG="$OUTPUT_DIR/grype.log"
 
+# Optional OpenVEX inputs.
+#
+# VEX_FILES is a whitespace-separated list of repo-local OpenVEX
+# documents (typically `.sc/vex/*.openvex.json` in the consumer repo).
+# Each path is mounted into the Trivy container and passed to both
+# Trivy and Grype as `--vex <path>`. Statements with
+# `status: not_affected` or `status: fixed` matching the SBOM's
+# components are suppressed at the scanner — no `.trivyignore`, no
+# DefectDojo-side ignore rules.
+#
+# Backward-compatible: if VEX_FILES is empty or unset, both scanners
+# behave exactly as before. The wiring is no-op for consumers that
+# don't ship a `.sc/vex/` directory.
+#
+# Authors of VEX docs: the two non-obvious gotchas are
+#   (a) Trivy and Grype need a DUAL product shape per statement
+#       (bare pURL for Trivy + image-pURL with subcomponent for Grype),
+#   (b) Trivy keys on CVE IDs while Grype keys on GHSA IDs —
+#       duplicate each statement once per key.
+# See https://github.com/Integrail/everworker/blob/main/.vex/README.md
+# for a worked example.
+TRIVY_VEX_FLAGS=()
+GRYPE_VEX_FLAGS=()
+TRIVY_VEX_MOUNTS=()
+if [ -n "${VEX_FILES:-}" ]; then
+  echo 'OpenVEX documents detected — wiring into Trivy + Grype:'
+  # Parse VEX_FILES into an array via read -ra so word-splitting cannot
+  # re-evaluate shell globs / metacharacters in pathological filenames.
+  read -ra _vex_paths <<< "$VEX_FILES"
+  for vex_path in "${_vex_paths[@]}"; do
+    if [ ! -f "$vex_path" ]; then
+      echo "::warning::VEX file not found, skipping: $vex_path"
+      continue
+    fi
+    vex_abs="$(cd "$(dirname -- "$vex_path")" && pwd)/$(basename -- "$vex_path")"
+    vex_base="$(basename -- "$vex_abs")"
+    echo "  $vex_abs  ->  /vex/$vex_base (in Trivy container)"
+    # Trivy runs inside Docker — mount each VEX into /vex/<basename>
+    # and reference that path. Grype also runs inside Docker (the SC
+    # `grype-image` is a pinned docker image), so the same mount goes
+    # to both.
+    TRIVY_VEX_MOUNTS+=(-v "$vex_abs:/vex/$vex_base:ro")
+    TRIVY_VEX_FLAGS+=(--vex "/vex/$vex_base")
+    GRYPE_VEX_FLAGS+=(--vex "/vex/$vex_base")
+  done
+fi
+
 # Run Trivy in background. Without --exit-code, Trivy returns 0 on success
 # regardless of findings; any non-zero indicates an infra failure.
 echo 'Starting Trivy scan...'
 docker run --rm \
   -v "$SBOM_ABS:/sbom.json:ro" \
   -v "$OUTPUT_DIR:/output" \
+  "${TRIVY_VEX_MOUNTS[@]}" \
   "$TRIVY_IMAGE" \
   sbom /sbom.json \
   --severity 'UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL' \
   --format json \
+  "${TRIVY_VEX_FLAGS[@]}" \
   --output /output/trivy-scan.json \
   > "$TRIVY_LOG" 2>&1 &
 TRIVY_PID=$!
@@ -56,8 +105,10 @@ echo 'Starting Grype scan...'
 docker run --rm \
   -v "$SBOM_ABS:/sbom.json:ro" \
   -v "$OUTPUT_DIR:/output" \
+  "${TRIVY_VEX_MOUNTS[@]}" \
   "$GRYPE_IMAGE" \
   "sbom:/sbom.json" \
+  "${GRYPE_VEX_FLAGS[@]}" \
   -o json \
   --file /output/grype-scan.json \
   > "$GRYPE_LOG" 2>&1 &
