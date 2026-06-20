@@ -1,50 +1,67 @@
+# Dependabot — simple-container-com/actions
+#
+# No language ecosystems live here (composite actions + reusable workflows
+# only), so there is no security-only language stream. Two VERSION streams,
+# matching the PAY-SPACE org rollout:
+#
+#   docker          — FROM pins in versions/Dockerfile, the single catalogue
+#     of every tool image run via `docker run`. Dependabot only sees this
+#     file (not the image:tag@sha256 pins inside shell / action.yml). A FROM
+#     bump fails `tool-version-sync` until `tools/sync-tool-versions.sh
+#     --apply` propagates the new pin on the PR branch; `rebase-strategy:
+#     disabled` stops that follow-up commit being silently rebased away.
+#
+#   github-actions  — `actions/*` SHAs in our reusable workflows + composite
+#     actions. Tracks security advisories too (supply-chain risk).
+#
+# Both ecosystems are single-rooted, so `directory:` is used rather than the
+# multi-module `directories:` form.
+
 version: 2
-
-# Two ecosystems track this repo:
-#
-# 1. github-actions: bumps `actions/*` SHAs in our reusable workflows and
-#    composite actions.
-#
-# 2. docker: bumps the FROM lines in `versions/Dockerfile`, which is the
-#    single catalogue of every tool image we run via `docker run`.
-#    Dependabot does NOT parse `image:tag@sha256:...` strings inside
-#    shell scripts or `action.yml` `default:` values, so the Dockerfile
-#    is the only thing it sees. When Dependabot bumps a FROM, the
-#    `Tool Version Sync` workflow fails until a human runs
-#    `tools/sync-tool-versions.sh --apply` on the PR branch and pushes
-#    the propagated changes. `rebase-strategy: disabled` keeps that
-#    follow-up commit from being silently rebased away.
-
 updates:
-  - package-ecosystem: github-actions
-    directory: /
-    schedule:
-      interval: weekly
-      day: monday
-    open-pull-requests-limit: 5
-    labels:
-      - dependencies
-      - github-actions
-    commit-message:
-      prefix: deps
-      include: scope
-    groups:
-      actions-minor-and-patch:
-        applies-to: version-updates
-        update-types:
-          - minor
-          - patch
-
+  # ── Docker: VERSION only ────────────────────────────────────────────────
   - package-ecosystem: docker
     directory: /versions
     schedule:
       interval: weekly
       day: monday
+      time: "09:00"
+      timezone: UTC
     open-pull-requests-limit: 5
-    rebase-strategy: disabled
+    rebase-strategy: disabled            # keep the tool-version-sync commit
+    commit-message:
+      prefix: "chore(docker)"
     labels:
       - dependencies
       - docker
+    groups:
+      docker:                            # majors fall outside ⇒ own PR each
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
+  # ── GitHub Actions: SECURITY + VERSION ──────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: UTC
+    open-pull-requests-limit: 5
     commit-message:
-      prefix: deps
-      include: scope
+      prefix: "chore(ci)"
+    labels:
+      - dependencies
+      - github-actions
+    groups:
+      github-actions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+      github-actions:                    # third-party majors ⇒ own PR each
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
