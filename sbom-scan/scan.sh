@@ -83,6 +83,25 @@ if [ -n "${VEX_FILES:-}" ]; then
   done
 fi
 
+# Pre-pull scanner images with retry — anonymous pulls from public.ecr.aws
+# are rate-limited and intermittently fail with `toomanyrequests`, which
+# would otherwise kill the scan before it starts.
+for img in "$TRIVY_IMAGE" "$GRYPE_IMAGE"; do
+  pulled=0
+  for attempt in 1 2 3 4 5; do
+    if docker pull --quiet "$img" >/dev/null 2>&1; then
+      pulled=1
+      break
+    fi
+    echo "::warning::docker pull attempt ${attempt}/5 failed for ${img}; retrying in $((attempt * 15))s"
+    sleep $((attempt * 15))
+  done
+  if [ "$pulled" -ne 1 ]; then
+    echo "::error::Failed to pull ${img} after 5 attempts"
+    exit 1
+  fi
+done
+
 # Run Trivy in background. Without --exit-code, Trivy returns 0 on success
 # regardless of findings; any non-zero indicates an infra failure.
 echo 'Starting Trivy scan...'
