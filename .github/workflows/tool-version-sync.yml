@@ -29,6 +29,9 @@ jobs:
         id: sync_check
         run: tools/sync-tool-versions.sh --check
 
+      - name: Test the propagation script
+        run: tools/test-sync-tool-versions.sh
+
       - name: Explain how to fix drift
         if: failure() && steps.sync_check.outcome == 'failure'
         run: |

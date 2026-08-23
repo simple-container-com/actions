@@ -132,6 +132,15 @@ jobs:
           # -u stages tracked files only: the script rewrites existing
           # consumer files and never creates new ones.
           git add -u
+          # GITHUB_TOKEN cannot push changes under .github/workflows/: the
+          # `workflows` permission is not grantable to the Actions token.
+          # Detect it here rather than committing and then dying on a bare
+          # push error. Currently reachable via the actionlint / shellcheck
+          # stages, whose only consumer is .github/workflows/lint.yml.
+          if git diff --cached --name-only | grep -q '^\.github/workflows/'; then
+            echo '::error::This bump touches .github/workflows/**; GITHUB_TOKEN cannot push workflow changes. Run tools/sync-tool-versions.sh --apply locally and push with a user credential.'
+            exit 1
+          fi
           # --no-verify plus an empty hooks path: the tree being committed
           # is checked-out content, so it must not be able to run code here.
           git -c core.hooksPath=/dev/null commit --no-verify \

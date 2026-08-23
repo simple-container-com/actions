@@ -13,6 +13,14 @@
 #   that gap. The CI workflow `tool-version-sync.yml` runs `--check` on
 #   every PR; `--apply` is a 1-command propagation a human runs locally
 #   on a Dependabot PR before merging.
+#
+#   One stage group needs a human either way: `actionlint` and
+#   `shellcheck` resolve to `.github/workflows/lint.yml`, and GITHUB_TOKEN
+#   cannot push changes under `.github/workflows/` (the `workflows`
+#   permission is not grantable to the Actions token). The
+#   `Tool Version Autosync` workflow detects that case and stops with an
+#   explanation rather than failing on the push. Behaviour is pinned by
+#   tools/test-sync-tool-versions.sh.
 set -euo pipefail
 
 usage() {
@@ -116,15 +124,16 @@ run_pass() {
       for c in "${current[@]}"; do
         if [ "$c" != "$pin" ]; then
           if [ "$pass_mode" = '--apply' ]; then
-            python3 -c '
-import sys, pathlib
+            python3 - "$abs" "$c" "$pin" <<'PY'
+import pathlib
+import sys
+
 path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
 p = pathlib.Path(path)
 text = p.read_text()
-new_text = text.replace(old, new)
-if new_text != text:
-    p.write_text(new_text)
-              ' "$abs" "$c" "$pin"
+if old in text:
+    p.write_text(text.replace(old, new))
+PY
             printf 'updated %s: %s -> %s\n' "$f" "$c" "$pin" >&2
             applied=1
           else
