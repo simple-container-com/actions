@@ -26,4 +26,31 @@ jobs:
           persist-credentials: false
 
       - name: Run sync check
+        id: sync_check
         run: tools/sync-tool-versions.sh --check
+
+      - name: Test the propagation script
+        run: tools/test-sync-tool-versions.sh
+
+      - name: Explain how to fix drift
+        if: failure() && steps.sync_check.outcome == 'failure'
+        run: |
+          set -euo pipefail
+          cat >> "$GITHUB_STEP_SUMMARY" <<'SUMMARY'
+          ## Tool version drift
+
+          The pins in `versions/Dockerfile` do not match the consumer files
+          (composite-action `default:` values and shell scripts).
+
+          Fix it with a single command on this branch:
+
+          ```bash
+          tools/sync-tool-versions.sh --apply
+          ```
+
+          Then commit the result and push.
+
+          No local clone needed: run the `Tool Version Autosync` workflow from
+          the Actions tab, pass this PR's branch name, and it will propagate
+          the pins and push the commit for you.
+          SUMMARY

@@ -301,3 +301,28 @@ checkout-no-persist-cases:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       with:
         persist-credentials: true
+
+# Rule 20 - workflow_dispatch input flowing straight into the checkout ref
+# of a privileged job. The rule is a whole-file span regex anchored on the
+# `workflow_dispatch:` token and a privileged marker, so both are supplied
+# here as literals (this file's real `on:` block is shared by every case,
+# exactly as done for `workflow_run:` in the rule-12 case above).
+# workflow_dispatch:
+# contents: write
+dispatch-ref-cases:
+  runs-on: ubuntu-24.04
+  steps:
+    # ruleid: gha-dispatch-input-ref-checkout
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        ref: ${{ inputs.branch }}
+        persist-credentials: false
+
+    # A checkout whose ref does not come from a dispatch input must NOT
+    # fire, including the remediated form where a preceding step has
+    # validated the input and exported it as a step output.
+    # ok: gha-dispatch-input-ref-checkout
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        ref: ${{ steps.validate.outputs.branch }}
+        persist-credentials: false

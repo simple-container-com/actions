@@ -9,7 +9,7 @@
 # Invoked from the semgrep-self-test workflow.
 set -euo pipefail
 
-: "${SEMGREP_IMAGE:=semgrep/semgrep:1.161.0@sha256:326e5f41cc972bb423b764a14febbb62bbad29ee1c01820805d077dd868fea48}"
+: "${SEMGREP_IMAGE:=semgrep/semgrep:1.174.0@sha256:f1f7b71861c7b28b6e0f661225a2c4f58a484f5d0f182465c6d6b3b22f972ade}"
 
 if ! printf '%s' "$SEMGREP_IMAGE" | grep -qE '^[A-Za-z0-9][A-Za-z0-9._/-]*:[A-Za-z0-9._-]+@sha256:[a-f0-9]{64}$'; then
   echo "::error::Refusing SEMGREP_IMAGE='$SEMGREP_IMAGE'"

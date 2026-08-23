@@ -452,3 +452,45 @@ rules:
     metadata:
       category: security
       cwe: "CWE-538: Insertion of Sensitive Information into Externally-Accessible File or Directory"
+
+  # ====================================================================
+  # 20. `workflow_dispatch` input used as the `actions/checkout` ref in a
+  #     job that holds write scope or secrets. A dispatch input is free
+  #     text and `actions/checkout` resolves anything git can resolve: a
+  #     branch, a SHA, or `refs/pull/<n>/head`, which the BASE repository
+  #     holds for FORK pull requests. Any later step that runs a script
+  #     out of the checked-out tree then executes attacker-authored
+  #     content with the job's token. "Only maintainers can dispatch" is
+  #     not a control here: the maintainer is the one supplying the ref,
+  #     and the ref decides whose code runs.
+  #
+  #     Fix: validate the input against an allowlist in a step that runs
+  #     BEFORE the checkout, and have the checkout consume that step's
+  #     validated output instead of the raw input.
+  #
+  #     Two orderings are matched because the privileged marker
+  #     (`contents: write` at job level, or a `secrets.` reference in a
+  #     step) can sit either side of the checkout.
+  # ====================================================================
+  - id: gha-dispatch-input-ref-checkout
+    languages: [yaml]
+    severity: ERROR
+    message: >-
+      `actions/checkout` with `ref:` taken straight from a
+      `workflow_dispatch` input, in a job holding `contents: write` or
+      secrets. The input is free text and resolves fork PR heads
+      (`refs/pull/<n>/head`) as well as branches and SHAs, so a later
+      step that executes anything from the tree runs untrusted code with
+      the job's privileges. Validate the input against an allowlist in a
+      step placed BEFORE the checkout and check out that step's output.
+    pattern-either:
+      - pattern-regex: '(?s)\bworkflow_dispatch:[\s\S]{0,8000}?(?:contents:[ \t]*write|secrets\.)[\s\S]{0,8000}?actions/checkout@[\s\S]{0,500}?ref:[ \t]*[^\n]*\$\{\{\s*(?:inputs|github\.event\.inputs)\.'
+      - pattern-regex: '(?s)\bworkflow_dispatch:[\s\S]{0,8000}?actions/checkout@[\s\S]{0,500}?ref:[ \t]*[^\n]*\$\{\{\s*(?:inputs|github\.event\.inputs)\.[\s\S]{0,4000}?(?:contents:[ \t]*write|secrets\.)'
+    paths:
+      include:
+        - "**/.github/workflows/*.yml"
+        - "**/.github/workflows/*.yaml"
+    metadata:
+      category: security
+      cwe: "CWE-829: Inclusion of Functionality from Untrusted Control Sphere"
+      reference: "https://securitylab.github.com/research/github-actions-preventing-pwn-requests/"
