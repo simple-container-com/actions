@@ -4,9 +4,10 @@ name: Tool Version Autosync
 #
 # The problem this solves: Dependabot bumps a pin in `versions/Dockerfile`,
 # but it cannot run `tools/sync-tool-versions.sh`, so the new pin never
-# reaches the consumer files (`trufflehog-scan/action.yml`,
-# `sbom-generate/action.yml`, `sbom-scan/action.yml`,
-# `semgrep-scan/action.yml`, `semgrep-scan/run-tests.sh`). The `--check`
+# reaches the consumer files. Seven stages map onto six files
+# (`trufflehog-scan/action.yml`, `sbom-generate/action.yml`,
+# `sbom-scan/action.yml`, `semgrep-scan/action.yml`,
+# `semgrep-scan/run-tests.sh`, `.github/workflows/lint.yml`). The `--check`
 # gate then fails and the bump stalls. Left alone this deadlocks every
 # scanner update, and consumers keep scanning with frozen detection
 # content.
@@ -26,8 +27,27 @@ name: Tool Version Autosync
 #     `semgrep-scan/rules/`. Shipping it here would mean the repo that
 #     defines those rules is the repo that violates them.
 #
-# A human dispatch keeps a full-scope token without ever running PR
-# content, so there is no untrusted-head problem to mitigate.
+# Why the branch input is allowlisted rather than taken as given:
+#
+#   A human dispatch does NOT by itself make the checked-out tree trusted.
+#   `workflow_dispatch` inputs are free text, and `actions/checkout`
+#   resolves anything git can resolve: a branch, a SHA, or
+#   `refs/pull/<n>/head`, which the BASE repository holds for fork pull
+#   requests. Step 2 below then executes a script FROM THAT TREE in a job
+#   holding `contents: write` on the repository that defines this org's
+#   composite actions. Attacker-authored content there could prepend a
+#   fake `git` to `$GITHUB_PATH`, or plant `.git/hooks/pre-commit`, and
+#   capture the token used by the push step. A tag or branch write here is
+#   a supply-chain compromise of every consumer, so "only maintainers can
+#   dispatch" is not a sufficient control.
+#
+#   `Validate target branch` therefore runs BEFORE the checkout and accepts
+#   only `dependabot/*`. Forks cannot create branches in this repository,
+#   so the only tree this job can ever execute is one Dependabot wrote
+#   here. The checkout consumes the validated step output, never the raw
+#   input. Defence in depth on the privileged step: the commit runs with
+#   `core.hooksPath=/dev/null` and `--no-verify`, so a planted hook in the
+#   checked-out tree cannot run even if the allowlist is ever widened.
 #
 # Caveat: commits pushed with GITHUB_TOKEN do not start new workflow runs,
 # so `Tool Version Sync` will not re-run by itself on the commit this
@@ -40,7 +60,7 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'Branch to propagate pins on (e.g. dependabot/docker/versions/docker-abc123)'
+        description: 'Dependabot branch to propagate pins on (e.g. dependabot/docker/versions/docker-abc123)'
         required: true
         type: string
 
@@ -58,13 +78,36 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Validate target branch
+        id: validate
+        env:
+          TARGET_BRANCH: ${{ inputs.branch }}
+        run: |
+          set -euo pipefail
+          case "$TARGET_BRANCH" in
+            *..*|*/)
+              echo "::error::Refusing '$TARGET_BRANCH': path traversal or trailing slash."
+              exit 1
+              ;;
+            dependabot/*) ;;
+            *)
+              echo "::error::Refusing '$TARGET_BRANCH': only dependabot/* branches may be autosynced."
+              exit 1
+              ;;
+          esac
+          printf '%s' "$TARGET_BRANCH" | grep -qE '^dependabot/[A-Za-z0-9._/-]+$' \
+            || { echo '::error::Illegal characters in branch name'; exit 1; }
+          printf 'branch=%s\n' "$TARGET_BRANCH" >> "$GITHUB_OUTPUT"
+
       - name: Checkout target branch
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
-          ref: ${{ inputs.branch }}
-          # The push below supplies its own credentials via an auth header,
-          # so the token is never written into .git/config where later
-          # steps could read it.
+          # Validated short branch name, not the raw dispatch input: the
+          # step above rejects anything outside `dependabot/*`, so this can
+          # never resolve to a fork PR head (`refs/pull/<n>/head`).
+          ref: ${{ steps.validate.outputs.branch }}
+          # The push below supplies its own credentials, so the token is
+          # never written into .git/config by the checkout itself.
           persist-credentials: false
 
       - name: Propagate pins
@@ -74,7 +117,7 @@ jobs:
         env:
           # Indirection through env keeps the branch name out of the
           # generated shell source.
-          TARGET_BRANCH: ${{ inputs.branch }}
+          TARGET_BRANCH: ${{ steps.validate.outputs.branch }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -89,8 +132,22 @@ jobs:
           # -u stages tracked files only: the script rewrites existing
           # consumer files and never creates new ones.
           git add -u
-          git commit \
+          # --no-verify plus an empty hooks path: the tree being committed
+          # is checked-out content, so it must not be able to run code here.
+          git -c core.hooksPath=/dev/null commit --no-verify \
             -m 'chore(versions): propagate tool pins to consumer files' \
             -m 'Generated by tools/sync-tool-versions.sh --apply.'
-          git -c http.extraheader="AUTHORIZATION: bearer ${GH_TOKEN}" \
-            push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          # Write the credential into .git/config instead of passing it on
+          # git's argv: argv is readable from the runner's process table for
+          # the whole lifetime of the push. printf is a shell builtin, so the
+          # token never becomes a process argument. Removed in the always()
+          # step below.
+          printf '[http]\n\textraheader = AUTHORIZATION: bearer %s\n' \
+            "$GH_TOKEN" >> "$(git rev-parse --git-dir)/config"
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+
+      - name: Remove push credential
+        if: always()
+        run: |
+          set -euo pipefail
+          git config --local --unset-all http.extraheader 2>/dev/null || true
