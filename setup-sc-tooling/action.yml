@@ -30,6 +30,8 @@ inputs:
     default: ''
   welder-sha256:
     description: 'OPTIONAL hex SHA256 of the Welder tarball.'
+    required: false
+    default: ''
   accept-preinstalled-welder:
     description: |
       Welder version to ACCEPT if already on PATH, e.g. `2024.5.1-alpha2`.
@@ -46,8 +48,6 @@ inputs:
       accepting a preinstalled copy by version is safe in practice — but it is
       OPT-IN and compared exactly, so a runner carrying a different Welder
       still downloads rather than silently using the wrong build.
-    required: false
-    default: ''
     required: false
     default: ''
 
@@ -96,13 +96,19 @@ runs:
         set -uo pipefail
         sc_hit=false
         welder_hit=false
+        # `2>&1` on BOTH, and it is load-bearing for welder: **welder prints
+        # its version to STDERR**, while sc prints to stdout. With
+        # `2>/dev/null` the welder comparison reads an empty string and the
+        # skip can NEVER fire — the guard looks correct, runs clean, and
+        # silently does nothing. Live-caught 2026-10-20 against a rootfs where
+        # welder was installed and working.
         if [ -n "${SC_WANT}" ] && command -v sc >/dev/null 2>&1; then
-          got="$(sc --version 2>/dev/null | grep -oE '[0-9]{4}\.[0-9]+\.[0-9]+(-[A-Za-z0-9._-]+)?' | head -1)"
+          got="$(sc --version 2>&1 | grep -oE '[0-9]{4}\.[0-9]+\.[0-9]+(-[A-Za-z0-9._-]+)?' | head -1)"
           [ "${got}" = "${SC_WANT#v}" ] && sc_hit=true
           echo "sc on PATH reports '${got}', wanted '${SC_WANT#v}' -> hit=${sc_hit}"
         fi
         if [ -n "${WELDER_WANT}" ] && command -v welder >/dev/null 2>&1; then
-          got="$(welder --version 2>/dev/null | grep -oE '[0-9]{4}\.[0-9]+\.[0-9]+(-[A-Za-z0-9._-]+)?' | head -1)"
+          got="$(welder --version 2>&1 | grep -oE '[0-9]{4}\.[0-9]+\.[0-9]+(-[A-Za-z0-9._-]+)?' | head -1)"
           [ "${got}" = "${WELDER_WANT#v}" ] && welder_hit=true
           echo "welder on PATH reports '${got}', wanted '${WELDER_WANT#v}' -> hit=${welder_hit}"
         fi
@@ -143,5 +149,5 @@ runs:
         fi
         if [ "${WANT_WELDER}" = "true" ]; then
           command -v welder >/dev/null || { echo "::error::welder not on PATH after setup" >&2; exit 1; }
-          welder --version | head -1
+          welder --version 2>&1 | head -1   # stderr: see the note above
         fi
