@@ -25,15 +25,84 @@ inputs:
 runs:
   using: 'composite'
   steps:
+    # Skip the downloads when the PINNED versions are already on PATH.
+    #
+    # Why: both installers fetch a release binary from GitHub on every use, and
+    # this composite runs several times per release (each build-platforms leg
+    # plus the finalize job). On a self-hosted runner whose egress is a fake-IP
+    # hijack that is a repeated exposure to a flaky network path: measured 9-10 s
+    # per leg normally, and 7 min 11 s during a stall on 2026-10-20
+    # (simple-container-com/api run 39402578614). Nothing failed — the consuming
+    # steps are continue-on-error — it just silently cost minutes.
+    #
+    # Version is compared EXACTLY, not just presence: an image carrying a
+    # different cosign would otherwise silently sign releases with an unpinned
+    # tool, which is the kind of drift the SHA pins above exist to prevent. A
+    # mismatch falls through and installs, so a wrong preinstall costs one
+    # download, never a wrong tool.
+    #
+    # On GitHub-hosted and Blacksmith runners neither binary is present, so both
+    # guards miss and this behaves exactly as before.
+    - name: Check for preinstalled, correctly-pinned tools
+      id: preinstalled
+      shell: bash
+      env:
+        COSIGN_WANT: ${{ inputs.cosign-version }}
+        SYFT_WANT: ${{ inputs.syft-version }}
+      run: |
+        set -uo pipefail
+        have() {  # have <bin> <wanted-tag> -> prints "true"/"false"
+          local bin="$1" want="${2#v}" got
+          command -v "$bin" >/dev/null 2>&1 || { echo false; return; }
+          # Anchor on the version FIELD, not the first digits in the output:
+          # `cosign version` prints an ASCII-art banner first, so matching a
+          # stray version-shaped string there would compare the wrong thing.
+          # cosign emits "GitVersion:", syft emits "Version:".
+          got="$("$bin" version 2>/dev/null | grep -iE '^[[:space:]]*(git)?version' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+          [ "${got}" = "${want}" ] && echo true || echo false
+        }
+        c="$(have cosign "${COSIGN_WANT}")"
+        s="$(have syft "${SYFT_WANT}")"
+        echo "cosign=${c}" >> "$GITHUB_OUTPUT"
+        echo "syft=${s}"   >> "$GITHUB_OUTPUT"
+        echo "cosign preinstalled at ${COSIGN_WANT}: ${c}; syft at ${SYFT_WANT}: ${s}"
+
     - name: Install cosign
+      if: steps.preinstalled.outputs.cosign != 'true'
       uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
       with:
         cosign-release: ${{ inputs.cosign-version }}
 
     - name: Install syft
+      if: steps.preinstalled.outputs.syft != 'true'
       uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
       with:
         syft-version: ${{ inputs.syft-version }}
+
+    # Assert the tools are usable at the pinned versions regardless of which
+    # path got us here — a skipped install that was wrong about the version
+    # must not surface later as a confusing signing failure.
+    - name: Verify cosign + syft
+      shell: bash
+      env:
+        COSIGN_WANT: ${{ inputs.cosign-version }}
+        SYFT_WANT: ${{ inputs.syft-version }}
+      run: |
+        set -euo pipefail
+        for pair in "cosign:${COSIGN_WANT}" "syft:${SYFT_WANT}"; do
+          bin="${pair%%:*}"; want="${pair#*:}"; want="${want#v}"
+          command -v "$bin" >/dev/null 2>&1 || { echo "::error::${bin} not on PATH after install" >&2; exit 1; }
+          # Anchor on the version FIELD, not the first digits in the output:
+          # `cosign version` prints an ASCII-art banner first, so matching a
+          # stray version-shaped string there would compare the wrong thing.
+          # cosign emits "GitVersion:", syft emits "Version:".
+          got="$("$bin" version 2>/dev/null | grep -iE '^[[:space:]]*(git)?version' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+          if [ "${got}" != "${want}" ]; then
+            echo "::error::${bin} is ${got}, expected ${want} — the pinned version is not what will run" >&2
+            exit 1
+          fi
+          echo "${bin} ${got} OK"
+        done
 
     - name: Verify gh CLI is available (for `gh attestation verify`)
       shell: bash
