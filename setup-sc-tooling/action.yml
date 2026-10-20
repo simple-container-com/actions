@@ -30,6 +30,24 @@ inputs:
     default: ''
   welder-sha256:
     description: 'OPTIONAL hex SHA256 of the Welder tarball.'
+  accept-preinstalled-welder:
+    description: |
+      Welder version to ACCEPT if already on PATH, e.g. `2024.5.1-alpha2`.
+      When the installed `welder --version` matches exactly, the download is
+      skipped.
+
+      This exists because Welder — unlike sc — cannot be pinned by URL:
+      `welder.simple-container.com/releases/<version>/...` returns the dist
+      server's HTML 404 for every version tried, so only `latest` resolves
+      (verified 2026-10-20). `welder-version` therefore cannot express "use
+      this exact build", and its validator rejects the only published
+      version string anyway (`2024.5.1-alpha2` fails `^[0-9]+\.[0-9]+\.[0-9]+$`).
+      That `latest` artifact has been byte-identical since 2024-05-13, so
+      accepting a preinstalled copy by version is safe in practice — but it is
+      OPT-IN and compared exactly, so a runner carrying a different Welder
+      still downloads rather than silently using the wrong build.
+    required: false
+    default: ''
     required: false
     default: ''
 
@@ -50,9 +68,50 @@ outputs:
 runs:
   using: 'composite'
   steps:
+    # Skip a download when the requested version is ALREADY on PATH.
+    #
+    # Both binaries come from our own CDN on every job, and on a self-hosted
+    # runner whose egress is a fake-IP hijack that is slow and flaky: the pair
+    # measured 320 s in one `Build Setup` (simple-container-com/api run
+    # 39443088291, 2026-10-20), and Welder alone is a 34 MB tarball / 50 MB
+    # binary. Nothing fails — it just costs minutes on every job.
+    #
+    # sc is compared against `sc-version` and therefore only ever skips when
+    # the caller PINNED a version; leaving it empty means "latest" and always
+    # downloads, which is the safe default.
+    #
+    # Welder cannot be pinned (see `accept-preinstalled-welder`), so it skips
+    # only against that explicit opt-in input.
+    #
+    # Both comparisons are exact. A runner carrying a different build
+    # downloads as before, so a wrong preinstall costs one download and never
+    # a wrong binary.
+    - name: Check for preinstalled, correctly-versioned tools
+      id: preinstalled
+      shell: bash
+      env:
+        SC_WANT: ${{ inputs.sc-version }}
+        WELDER_WANT: ${{ inputs.accept-preinstalled-welder }}
+      run: |
+        set -uo pipefail
+        sc_hit=false
+        welder_hit=false
+        if [ -n "${SC_WANT}" ] && command -v sc >/dev/null 2>&1; then
+          got="$(sc --version 2>/dev/null | grep -oE '[0-9]{4}\.[0-9]+\.[0-9]+(-[A-Za-z0-9._-]+)?' | head -1)"
+          [ "${got}" = "${SC_WANT#v}" ] && sc_hit=true
+          echo "sc on PATH reports '${got}', wanted '${SC_WANT#v}' -> hit=${sc_hit}"
+        fi
+        if [ -n "${WELDER_WANT}" ] && command -v welder >/dev/null 2>&1; then
+          got="$(welder --version 2>/dev/null | grep -oE '[0-9]{4}\.[0-9]+\.[0-9]+(-[A-Za-z0-9._-]+)?' | head -1)"
+          [ "${got}" = "${WELDER_WANT#v}" ] && welder_hit=true
+          echo "welder on PATH reports '${got}', wanted '${WELDER_WANT#v}' -> hit=${welder_hit}"
+        fi
+        echo "sc=${sc_hit}" >> "$GITHUB_OUTPUT"
+        echo "welder=${welder_hit}" >> "$GITHUB_OUTPUT"
+
     - name: Install sc
       id: install_sc
-      if: inputs.install-sc == 'true'
+      if: inputs.install-sc == 'true' && steps.preinstalled.outputs.sc != 'true'
       shell: bash
       env:
         SC_VERSION: ${{ inputs.sc-version }}
@@ -61,9 +120,28 @@ runs:
 
     - name: Install Welder
       id: install_welder
-      if: inputs.install-welder == 'true'
+      if: inputs.install-welder == 'true' && steps.preinstalled.outputs.welder != 'true'
       shell: bash
       env:
         WELDER_VERSION: ${{ inputs.welder-version }}
         WELDER_SHA256: ${{ inputs.welder-sha256 }}
       run: ${{ github.action_path }}/../install-welder/install.sh
+
+    # Assert both tools resolve whichever path ran, so a skipped install that
+    # was wrong about the version cannot surface later as a confusing failure
+    # deep inside `sc deploy` or `welder run`.
+    - name: Verify sc + welder are usable
+      shell: bash
+      env:
+        WANT_SC: ${{ inputs.install-sc }}
+        WANT_WELDER: ${{ inputs.install-welder }}
+      run: |
+        set -euo pipefail
+        if [ "${WANT_SC}" = "true" ]; then
+          command -v sc >/dev/null || { echo "::error::sc not on PATH after setup" >&2; exit 1; }
+          sc --version | head -1
+        fi
+        if [ "${WANT_WELDER}" = "true" ]; then
+          command -v welder >/dev/null || { echo "::error::welder not on PATH after setup" >&2; exit 1; }
+          welder --version | head -1
+        fi
