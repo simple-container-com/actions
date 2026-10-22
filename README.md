@@ -14,7 +14,8 @@ Centralized reusable GitHub Actions workflows + composite actions for the Simple
 │   │   ├── semgrep-comment.yml        # workflow_call — sticky PR comment for Semgrep
 │   │   ├── lint.yml                   # self — actionlint + shellcheck
 │   │   ├── semgrep-self-test.yml      # self — runs semgrep-scan/run-tests.sh
-│   │   └── tool-version-sync.yml      # self — sync-tool-versions.sh --check
+│   │   ├── tool-version-sync.yml      # self — sync-tool-versions.sh --check + its tests
+│   │   └── tool-version-autosync.yml  # self — dispatch: propagate pins on a dependabot/* branch
 │   └── dependabot.yml                 # github-actions + docker (versions/Dockerfile)
 ├── trufflehog-scan/                   # composite — TruffleHog filesystem scan
 ├── sbom-generate/                     # composite — Syft → CycloneDX SBOM
@@ -25,6 +26,7 @@ Centralized reusable GitHub Actions workflows + composite actions for the Simple
 ├── semgrep-scan/                      # composite — Semgrep runner (rules + tests + run-tests.sh)
 ├── notify-telegram/                   # composite — Telegram Bot API sender (token-masked)
 ├── tools/sync-tool-versions.sh        # propagate versions/Dockerfile → consumer files
+├── tools/test-sync-tool-versions.sh   # asserts which files a synthetic bump rewrites
 └── versions/Dockerfile                # tool image catalogue (Dependabot tracks this)
 ```
 
@@ -184,7 +186,12 @@ These rules are enforced by [`lint.yml`](.github/workflows/lint.yml), [`semgrep-
 **Tool images**
 - Every image referenced anywhere in the repo lives in [`versions/Dockerfile`](versions/Dockerfile) as a `FROM image:tag@sha256:<digest> AS <stage>` line. Dependabot's `docker` ecosystem tracks it.
 - Adding a new tool: (1) add a `FROM ... AS <stage>` row to `versions/Dockerfile`, (2) add the consumer reference in the relevant `action.yml`/script, (3) add a `[<stage>]='<file>'` row to the `targets` map in [`tools/sync-tool-versions.sh`](tools/sync-tool-versions.sh).
-- Bumping a tool: Dependabot opens a PR against `versions/Dockerfile`; pull the branch and run `tools/sync-tool-versions.sh --apply` to propagate; commit; push. CI's `Tool Version Sync` job will go red until the propagation is committed.
+- Bumping a tool: Dependabot opens a PR against `versions/Dockerfile`; the new pin must then be propagated to the consumer files or CI's `Tool Version Sync` job stays red. Two ways to do it:
+  - **From the Actions tab (no local clone).** Run the `Tool Version Autosync` workflow and give it the Dependabot branch name. It runs `--apply`, commits and pushes. The `branch` input is allowlisted to `dependabot/*` and validated before the checkout: `workflow_dispatch` inputs are free text and `actions/checkout` resolves fork PR heads (`refs/pull/<n>/head`) as readily as branches, so an unvalidated ref would let this job execute fork-authored content with `contents: write`. `gha-dispatch-input-ref-checkout` in [`semgrep-scan/rules/github-actions.yml`](semgrep-scan/rules/github-actions.yml) is the rule for that class.
+  - **Locally.** `tools/sync-tool-versions.sh --apply` on the branch, then commit and push.
+- Commits pushed by the autosync workflow use `GITHUB_TOKEN`, which does not start new workflow runs. `Tool Version Sync` will not re-run by itself on the pushed commit; close and reopen the PR, or comment `@dependabot rebase`, to get a green gate.
+- The `actionlint` and `shellcheck` stages are the exception: their only consumer is `.github/workflows/lint.yml`, and `GITHUB_TOKEN` cannot push changes under `.github/workflows/` at all (the `workflows` permission is not grantable to the Actions token). Autosync detects that and stops with an explanation; those two must be propagated locally and pushed with a user credential. The cleaner long-term fix is to move those two pins out of `lint.yml` into a non-workflow file the workflow sources.
+- `tools/test-sync-tool-versions.sh` runs a synthetic bump per stage group and asserts exactly which files `--apply` rewrites. It runs in the `Tool Version Sync` job.
 
 **Semgrep rules**
 - Every rule has at least one `# ruleid:` and one `# ok:` fixture in [`semgrep-scan/tests/`](semgrep-scan/tests/).
