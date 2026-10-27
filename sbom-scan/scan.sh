@@ -83,21 +83,37 @@ if [ -n "${VEX_FILES:-}" ]; then
   done
 fi
 
-# Pre-pull scanner images with retry — anonymous pulls from public.ecr.aws
-# are rate-limited and intermittently fail with `toomanyrequests`, which
-# would otherwise kill the scan before it starts.
+# Pre-pull scanner images with retry — registry pulls are rate-limited and
+# intermittently fail, which would otherwise kill the scan before it starts.
+#
+# Keep docker's stderr: this loop used to send it to /dev/null, so five
+# identical `attempt N/5 failed` warnings were the entire diagnostic and a
+# rate-limit was indistinguishable from DNS failure, a TLS reset or a bad
+# digest. api PR #496 burned a run on exactly that (2026-10-27): all five
+# attempts failed against public.ecr.aws while ghcr.io had served the Syft
+# image seconds earlier in the same job, and the log could not say why.
 for img in "$TRIVY_IMAGE" "$GRYPE_IMAGE"; do
   pulled=0
+  pull_out=''
   for attempt in 1 2 3 4 5; do
-    if docker pull --quiet "$img" >/dev/null 2>&1; then
+    # Combined capture, not `2>&1 >/dev/null`: that idiom is shellcheck
+    # SC2069 at severity=warning, which this repo's own lint job fails on.
+    # `--quiet` makes the success output a single digest line we discard.
+    if pull_out=$(docker pull --quiet "$img" 2>&1); then
       pulled=1
       break
     fi
-    echo "::warning::docker pull attempt ${attempt}/5 failed for ${img}; retrying in $((attempt * 15))s"
-    sleep $((attempt * 15))
+    # One line, newlines flattened: workflow commands are line-oriented and a
+    # multi-line ::warning:: silently truncates at the first newline.
+    echo "::warning::docker pull attempt ${attempt}/5 failed for ${img}: $(printf '%s' "$pull_out" | tr '\n' ' ' | cut -c1-500)"
+    # `if`, not `[ … ] && sleep`: under `set -e` a false test as the last
+    # command of the loop body aborts the script on the final attempt.
+    if [ "$attempt" -lt 5 ]; then
+      sleep $((attempt * 15))
+    fi
   done
   if [ "$pulled" -ne 1 ]; then
-    echo "::error::Failed to pull ${img} after 5 attempts"
+    echo "::error::Failed to pull ${img} after 5 attempts; last error: $(printf '%s' "$pull_out" | tr '\n' ' ' | cut -c1-500)"
     exit 1
   fi
 done
