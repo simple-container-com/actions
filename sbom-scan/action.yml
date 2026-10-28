@@ -10,9 +10,18 @@ inputs:
     required: false
     default: ''
   trivy-image:
+    # ghcr.io, not public.ecr.aws. The digest is unchanged and verified
+    # identical on both registries (`GET ghcr.io/v2/aquasecurity/trivy/
+    # manifests/0.70.0` → docker-content-digest: sha256:be1190af…), so this
+    # swaps the registry and not the artifact, and the pin still enforces
+    # identity. public.ecr.aws has failed all five pull attempts on runs where
+    # ghcr.io served the Syft and Grype images in the same job seconds earlier
+    # (api PR #496, 2026-10-27) — Grype below has always been on ghcr.io and
+    # has never been the leg that fails. If a future pull failure names
+    # ghcr.io, prefer parameterising per-caller over moving back.
     description: 'Pinned Trivy Docker image reference.'
     required: false
-    default: 'public.ecr.aws/aquasecurity/trivy:0.70.0@sha256:be1190afcb28352bfddc4ddeb71470835d16462af68d310f9f4bca710961a41e'
+    default: 'ghcr.io/aquasecurity/trivy:0.70.0@sha256:be1190afcb28352bfddc4ddeb71470835d16462af68d310f9f4bca710961a41e'
   grype-image:
     description: 'Pinned Grype Docker image reference.'
     required: false
