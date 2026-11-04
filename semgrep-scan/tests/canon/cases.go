@@ -14,9 +14,13 @@ import (
 	"crypto/hmac"
 	"crypto/md5"
 	"crypto/tls"
+	"net"
 	"net/http"
 	"os/exec"
 	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 // --------------------------------------------------------------------
@@ -260,4 +264,89 @@ func md5SumInExpression(content []byte) [16]byte {
 	// MUST NOT fire.
 	// ok: go-md5-in-crypto-context
 	return md5.Sum(content)
+}
+
+// --------------------------------------------------------------------
+// go-grpc-server-plaintext-non-loopback
+// --------------------------------------------------------------------
+
+func grpcLoopbackServer() {
+	lis, _ := net.Listen("tcp", "127.0.0.1:0")
+	// ok: go-grpc-server-plaintext-non-loopback
+	srv := grpc.NewServer()
+	_ = srv.Serve(lis)
+}
+
+func grpcLocalhostServer() error {
+	lis, _ := net.Listen("tcp", "localhost:9000")
+	// ok: go-grpc-server-plaintext-non-loopback
+	srv := grpc.NewServer()
+	return srv.Serve(lis)
+}
+
+func grpcUnixServer() error {
+	lis, _ := net.Listen("unix", "/tmp/x.sock")
+	// ok: go-grpc-server-plaintext-non-loopback
+	srv := grpc.NewServer()
+	return srv.Serve(lis)
+}
+
+func grpcServerWithCreds(creds credentials.TransportCredentials) error {
+	lis, _ := net.Listen("tcp", ":8443")
+	// ok: go-grpc-server-plaintext-non-loopback
+	srv := grpc.NewServer(grpc.Creds(creds))
+	return srv.Serve(lis)
+}
+
+func grpcServerWithCredsAndOpts(creds credentials.TransportCredentials) error {
+	lis, _ := net.Listen("tcp", ":8443")
+	// ok: go-grpc-server-plaintext-non-loopback
+	srv := grpc.NewServer(grpc.MaxRecvMsgSize(1<<20), grpc.Creds(creds))
+	return srv.Serve(lis)
+}
+
+func grpcWildcardServer() error {
+	lis, _ := net.Listen("tcp", ":50051")
+	// ruleid: go-grpc-server-plaintext-non-loopback
+	srv := grpc.NewServer()
+	return srv.Serve(lis)
+}
+
+func grpcAllInterfacesServer() error {
+	lis, _ := net.Listen("tcp", "0.0.0.0:50051")
+	// ruleid: go-grpc-server-plaintext-non-loopback
+	srv := grpc.NewServer()
+	return srv.Serve(lis)
+}
+
+func grpcLookalikeHostServer() error {
+	lis, _ := net.Listen("tcp", "127.0.0.1.evil.example:50051")
+	// ruleid: go-grpc-server-plaintext-non-loopback
+	srv := grpc.NewServer()
+	return srv.Serve(lis)
+}
+
+func grpcServerFromArgListener(lis net.Listener) error {
+	// ruleid: go-grpc-server-plaintext-non-loopback
+	srv := grpc.NewServer()
+	return srv.Serve(lis)
+}
+
+func grpcLoopbackNamedOnlyInIfElse(public bool) error {
+	var lis net.Listener
+	if public {
+		lis, _ = net.Listen("tcp", ":50051")
+	} else {
+		lis, _ = net.Listen("tcp", "127.0.0.1:0")
+	}
+	// Known limit (documented in the rule): a loopback Listen anywhere in the
+	// function exempts it, even if another branch binds a public address.
+	// ok: go-grpc-server-plaintext-non-loopback
+	srv := grpc.NewServer()
+	return srv.Serve(lis)
+}
+
+func grpcServerCallerSuppliedOpts(opts []grpc.ServerOption) *grpc.Server {
+	// ok: go-grpc-server-plaintext-non-loopback
+	return grpc.NewServer(opts...)
 }

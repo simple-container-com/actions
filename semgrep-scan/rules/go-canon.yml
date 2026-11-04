@@ -218,3 +218,60 @@ rules:
           patterns:
             - pattern-regex: '.'
             - pattern-not-regex: '"(git|stty|gh|cosign|syft|trivy|grype|kubectl|docker|pulumi|sc|welder)"'
+
+  # Replaces the registry rule
+  # `go.grpc.security.grpc-server-insecure-connection.grpc-server-insecure-connection`
+  # (disable it via `disabled-rules` in the consumer). The registry rule fires
+  # on every credential-less `grpc.NewServer()`, including in-process servers
+  # bound to 127.0.0.1 / a unix socket, which are plaintext by design (the
+  # Pulumi engine/monitor transport, go-plugin broker callbacks). This version
+  # keeps the signal for servers that can be reached from the network.
+  #
+  # Known limit: the loopback exemption is function-scoped. Semgrep can't
+  # follow a listener passed in from another function, so a server created
+  # from a listener argument is still flagged — that is the safe direction
+  # (annotate it with `// nosemgrep: go-grpc-server-plaintext-non-loopback`).
+  - id: go-grpc-server-plaintext-non-loopback
+    message: >-
+      `grpc.NewServer(...)` without `grpc.Creds(...)` serves plaintext gRPC,
+      and no loopback (127.0.0.1 / localhost / [::1]) or unix-socket listener
+      is bound in this function. If the listener is reachable from the
+      network, add TLS/mTLS via `grpc.Creds(...)`. If it is loopback-only
+      and the listener is created elsewhere, annotate with a rationale and
+      `// nosemgrep: go-grpc-server-plaintext-non-loopback`.
+    severity: ERROR
+    languages: [go]
+    paths:
+      include: ["**/*.go"]
+      exclude: ["**/*_test.go"]
+    patterns:
+      - pattern: grpc.NewServer(...)
+      - pattern-not: grpc.NewServer(..., grpc.Creds(...), ...)
+      # Caller-supplied option slice (`grpc.NewServer(opts...)`, e.g. the
+      # go-plugin broker's AcceptAndServe callback): creds may be carried in
+      # opts and are not visible here. The registry rule skipped this too.
+      - pattern-not: grpc.NewServer($OPTS...)
+      - pattern-not-inside: |
+          func $F(...) $RET {
+            ...
+            net.Listen("tcp", "=~/^(127\.0\.0\.1|localhost|\[::1\]):.*$/")
+            ...
+          }
+      - pattern-not-inside: |
+          func $F(...) $RET {
+            ...
+            net.Listen("unix", ...)
+            ...
+          }
+      - pattern-not-inside: |
+          func $F(...) {
+            ...
+            net.Listen("tcp", "=~/^(127\.0\.0\.1|localhost|\[::1\]):.*$/")
+            ...
+          }
+      - pattern-not-inside: |
+          func $F(...) {
+            ...
+            net.Listen("unix", ...)
+            ...
+          }
