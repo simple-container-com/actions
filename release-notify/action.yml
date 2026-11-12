@@ -1,0 +1,63 @@
+name: 'Release Notify'
+description: 'Send a Telegram message announcing a plugin release — success or failure. Wraps `notify-telegram` with the shared message format (🚀 released / ❗ release failed), the pinned transport, and the commit-author extraction. The caller remains responsible for the job-level `if: always()` + the two guard conditions that distinguish success vs failure from `needs.*.result`, because those readings are caller-scope and can only be evaluated in the caller workflow.'
+
+inputs:
+  plugin-name:
+    description: 'Name of the plugin repo this release is from, used verbatim in the message prefix (e.g. `sc-plugin-aws`). The composite does not infer this from `$GITHUB_REPOSITORY` — the repo name may differ from the human-facing plugin name, so make it explicit.'
+    required: true
+  version:
+    description: 'Release version string, typically `v2026.11.12-abc1234` (CalVer + short SHA) from the release workflow''s `version` job. Rendered as the inline link text.'
+    required: true
+  status:
+    description: 'Either `success` or `failure`. The caller decides which by reading `needs.*.result` in its own workflow — this input just picks which prefix emoji + text to send. Anything else is treated as `failure` to err on the loud side.'
+    required: true
+  chat-id:
+    description: 'Telegram chat ID. Passed through to `notify-telegram` verbatim. Typically read from a repo- or org-level secret (e.g. `secrets.CICD_BOT_TELEGRAM_CHAT_ID`).'
+    required: true
+  token:
+    description: 'Telegram bot token. Passed through to `notify-telegram`, which `::add-mask::`s it before any API call. Typically read from `secrets.CICD_BOT_TELEGRAM_TOKEN`.'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    # The commit author is available in the caller's env, so we don't need a
+    # dedicated action-side step for it. The caller passes nothing; we read
+    # $GITHUB_ACTOR directly. This differs from api/.github/workflows/push.yaml
+    # which also extracted commit message + truncated it for Telegram-length
+    # — plugin releases don't surface the commit message in the Telegram text
+    # (the link to the commit URL covers it), so the composite stays simple.
+    - name: Send Telegram notification
+      shell: bash
+      env:
+        PLUGIN_NAME: ${{ inputs.plugin-name }}
+        VERSION: ${{ inputs.version }}
+        STATUS: ${{ inputs.status }}
+      id: compose
+      run: |-
+        # The emoji + prefix text are the ONE place in the fleet where the
+        # "release announced" vs "release failed" phrasing is defined. Keep
+        # them identical in shape to api/.github/workflows/push.yaml's own
+        # release-notify guards so operators reading either message see
+        # consistent formatting.
+        if [ "${STATUS}" = "success" ]; then
+          echo "text=🚀 ${PLUGIN_NAME} released: " >> "$GITHUB_OUTPUT"
+        else
+          # Any status that is not literally `success` — including a caller
+          # that typo'd or an empty string — lands here. Loud failure
+          # notification is strictly safer than a silent skip.
+          echo "text=❗ ${PLUGIN_NAME} release failed: " >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Notify Telegram
+      uses: simple-container-com/actions/notify-telegram@bfa04ded2bf29f6e84754838f4684ab9df292b42 # main
+      with:
+        chat-id:   ${{ inputs.chat-id }}
+        token:     ${{ inputs.token }}
+        text:      ${{ steps.compose.outputs.text }}
+        # The inline link points at the commit (if the trigger is a push) or
+        # at the workflow run (if it's a tag push with no `github.event.
+        # head_commit`). Matches api's own fallback shape.
+        link-url:  ${{ github.event.head_commit.url || format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+        link-text: ${{ inputs.version }}
+        suffix:    ' by ${{ github.actor }}'
