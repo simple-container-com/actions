@@ -24,6 +24,7 @@ Centralized reusable GitHub Actions workflows + composite actions for the Simple
 ├── post-pr-comment/                   # composite — gh CLI sticky-comment poster (privileged)
 ├── semgrep-scan/                      # composite — Semgrep runner (rules + tests + run-tests.sh)
 ├── notify-telegram/                   # composite — Telegram Bot API sender (token-masked)
+├── release-notify/                    # composite — plugin-release announce via notify-telegram
 ├── tools/sync-tool-versions.sh        # propagate versions/Dockerfile → consumer files
 └── versions/Dockerfile                # tool image catalogue (Dependabot tracks this)
 ```
