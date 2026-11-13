@@ -97,12 +97,14 @@ git clone --depth=1 --branch "$SC_PARENT_REF" "$SC_PARENT_REPO" "$parent_dir" >/
   exit 3
 }
 
-# Lay cfg.github.yaml in the parent checkout so `sc secrets reveal`
-# resolves the registry's passphrase from the right file. mkdir -p is
-# idempotent: every SC-owned repo already has a .sc/ directory, but a
-# future parent that didn't would still work.
+# Lay cfg into the parent checkout so `sc secrets reveal` resolves
+# the registry's passphrase from the right file. The DESTINATION is
+# cfg.default.yaml — that's the file SC reads by default; cfg.github.yaml
+# is the operator's own naming for the CI-shaped bundle but SC itself
+# only looks for cfg.default.yaml. (api/.github/workflows/push.yaml:112
+# uses the same destination.) mkdir -p is idempotent.
 mkdir -p "$parent_dir/.sc"
-cp "$cfg_file" "$parent_dir/.sc/cfg.github.yaml"
+cp "$cfg_file" "$parent_dir/.sc/cfg.default.yaml"
 
 # Reveal the encrypted `.sc/stacks/*/secrets.yaml` files + pull the
 # token. Run from the parent dir because `sc secrets reveal` scans the
