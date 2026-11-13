@@ -1,0 +1,36 @@
+name: 'Dockerhub Login via SC'
+description: 'Log docker in to Dockerhub by pulling the fleet-wide credentials from an SC secrets registry. Replaces per-repo DOCKERHUB_USERNAME/DOCKERHUB_TOKEN org secrets — creds live in ONE place (the api repo''s `.sc/stacks/dist/secrets.yaml`) and every component / plugin repo inherits them via the single `SC_CONFIG` org secret. Prerequisites: `sc` CLI on PATH (consumer calls `install-sc` first) + docker daemon available (stock runner has it).'
+
+inputs:
+  sc-config:
+    description: 'The SC fleet config — literal contents of `.sc/cfg.default.yaml`, carried as a GitHub secret (the org-level `SC_CONFIG`). Written verbatim before `sc secrets reveal`.'
+    required: true
+  stack:
+    description: 'SC stack name carrying the token secret. Default: `dist` — the fleet-canonical location.'
+    required: false
+    default: 'dist'
+  secret-key:
+    description: 'Secret key under the stack. Default: `dockerhub-cicd-token` — matches the convention in the api repo.'
+    required: false
+    default: 'dockerhub-cicd-token'
+  username:
+    description: 'Dockerhub username. Default: `simplecontainer` — the fleet-canonical account whose token lives in the registry above.'
+    required: false
+    default: 'simplecontainer'
+  write-cfg-to:
+    description: 'OPTIONAL path where the SC config is written. Default: `.sc/cfg.default.yaml` relative to the workflow''s working directory. Override when the consumer repo has a non-default cwd or needs to keep an existing cfg.default.yaml intact.'
+    required: false
+    default: '.sc/cfg.default.yaml'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Login to Dockerhub via SC secrets
+      shell: bash
+      env:
+        SC_CONFIG: ${{ inputs.sc-config }}
+        SC_STACK: ${{ inputs.stack }}
+        SC_SECRET_KEY: ${{ inputs.secret-key }}
+        DOCKERHUB_USERNAME: ${{ inputs.username }}
+        SC_CFG_PATH: ${{ inputs.write-cfg-to }}
+      run: ${{ github.action_path }}/login.sh

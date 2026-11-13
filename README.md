@@ -25,6 +25,7 @@ Centralized reusable GitHub Actions workflows + composite actions for the Simple
 ├── semgrep-scan/                      # composite — Semgrep runner (rules + tests + run-tests.sh)
 ├── notify-telegram/                   # composite — Telegram Bot API sender (token-masked)
 ├── release-notify/                    # composite — plugin-release announce via notify-telegram
+├── dockerhub-login/                   # composite — docker login via SC_CONFIG + sc stack secret-get
 ├── tools/sync-tool-versions.sh        # propagate versions/Dockerfile → consumer files
 └── versions/Dockerfile                # tool image catalogue (Dependabot tracks this)
 ```
@@ -36,6 +37,7 @@ Centralized reusable GitHub Actions workflows + composite actions for the Simple
 | [`install-sc`](install-sc/) | Install the `sc` CLI at a pinned version. Downloads `dist.simple-container.com/sc-<platform>-<arch>-v<version>.tar.gz`, extracts to `~/.local/bin`, adds to `$GITHUB_PATH`. Optional `sha256` input for defense-in-depth (SC does not publish checksums today). Replaces the curl-pipe install bootstrap so consumer workflows never pipe remote content into a shell. |
 | [`install-welder`](install-welder/) | Same shape for the `welder` CLI. Note: the welder dist server only publishes `latest`; passing a `version` input that doesn't resolve fails with a clear error. Optional `sha256` input. |
 | [`notify-telegram`](notify-telegram/) | Send a Telegram message via the Bot API. Token is registered with `::add-mask::` so it is redacted from any subsequent log output. Inputs are validated; text is sent as plain text (no `parse_mode`) so attacker-controlled commit messages cannot inject formatting. Replaces unpinned third-party telegram-notify actions. |
+| [`dockerhub-login`](dockerhub-login/) | Log the docker daemon in to Dockerhub using the FLEET's credentials — pulls the token from `sc stack secret-get -s dist dockerhub-cicd-token` after unlocking the registry with the single org-level `SC_CONFIG` secret. Replaces per-repo `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` org secrets: every plugin/component repo inherits creds from the api repo's `.sc/stacks/dist/secrets.yaml`. Token is log-masked. Consumer must call `install-sc` first. |
 
 Use directly from a consumer workflow:
 
@@ -54,6 +56,14 @@ Use directly from a consumer workflow:
     chat-id: ${{ secrets.TG_CHAT_ID }}
     token:   ${{ secrets.TG_BOT_TOKEN }}
     text:    "✅ Build ${{ job.status }} on ${{ github.ref_name }}"
+
+# Log in to Dockerhub using the FLEET creds (one SC_CONFIG secret,
+# no per-repo DOCKERHUB_USERNAME/TOKEN):
+- uses: simple-container-com/actions/install-sc@v1
+- uses: simple-container-com/actions/dockerhub-login@v1
+  with:
+    sc-config: ${{ secrets.SC_CONFIG }}
+# — docker daemon now authed; subsequent `docker push simplecontainer/<img>:<tag>` works.
 ```
 
 ## Reusable workflows (consumer-facing)
